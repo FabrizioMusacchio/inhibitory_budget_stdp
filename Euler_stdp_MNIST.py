@@ -7,6 +7,37 @@ Create a conda environment with Python 3.12 or later, and install the required p
 conda create -n diehl_cook_euler python=3.12 mamba -y
 conda activate diehl_cook_euler
 mamba install numpy matplotlib numba scikit-learn tensorflow ipykernel -y
+
+Execution
+-------------
+You can run the code via command line or in VS Code's interactive Python environment. To run from command line:
+
+In general:
+
+```bash
+python Euler_stdp_MNIST.py --out_dir ./runs/diehl_cook_euler --epochs 1 --train_examples 60000 --test_examples 10000
+```
+
+E.g., 
+
+```bash
+source /Users/husker/miniforge3/etc/profile.d/conda.sh
+conda activate nest
+MPLCONFIGDIR=/tmp/mpl python /Users/husker/Science/Python/Projekte/SNN\ STDP\ MNIST/Euler_stdp_MNIST.py \
+  --mnist-npz-path /Users/husker/.keras/datasets/mnist.npz \
+  --epochs 1 --train-examples 60000 --test-examples 10000 \
+  --update-interval 10000 --plot-every 100 \
+  --no-record-spikes \
+  --w-aiae 20.0 \
+  --input-intensity 2.0 \
+  --out-dir /Users/husker/Science/Python/Projekte/SNN\ STDP\ MNIST/runs/real_full_60k
+```
+
+This will run the full Diehl-Cook training for 1 epoch on all 60k training examples and then test on 
+all 10k test examples, with the specified parameters. Adjust the parameters as needed for quicker runs 
+or different configurations.
+
+
 """
 # %% IMPORTS
 from __future__ import annotations
@@ -715,7 +746,8 @@ def plot_receptive_fields(W_xe: np.ndarray, cfg: SimConfig, out_png: Path, title
             big[i*n_in_sqrt:(i+1)*n_in_sqrt, j*n_in_sqrt:(j+1)*n_in_sqrt] = rf
     plt.figure(figsize=(10, 10))
     plt.imshow(big, interpolation="nearest", cmap="hot")
-    plt.colorbar()
+    # add a colobar that is not higher than the actual image:
+    plt.colorbar(fraction=0.046, pad=0.04)
     plt.title(title)
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
@@ -1005,7 +1037,7 @@ def main() -> None:
                 plot_image(img, label, f"train ep{ep} ex{k}", run_dir / "plots" / f"train_img_ep{ep}_ex{k}.png")
                 plot_raster(
                     out["spike_events_e"],
-                    title=f"train raster ep{ep} ex{k}",
+                    title=f"train raster ep{ep} ex{k}, shown digit: {label}",
                     out_png=run_dir / "plots" / f"train_raster_ep{ep}_ex{k}.png",
                     cfg=cfg,
                 )
