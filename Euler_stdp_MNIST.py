@@ -114,7 +114,7 @@ class SimConfig:
 
     # Fixed recurrent inhibition strengths
     w_aeai: float = 10.4
-    w_aiae: float = 17.0
+    w_aiae: float = 20.0
 
     # Delays
     max_delay_ms: float = 10.0
@@ -523,6 +523,14 @@ class DiehlCookEuler:
         cfg = self.cfg
 
         rates_hz = self._rates_from_image(img, input_intensity)
+
+        # In Brian, delay queues drain during the resting period because the
+        # simulation clock keeps advancing. Our simplified rest loop does not
+        # step input delay propagation, so stale delayed spikes would otherwise
+        # leak into later examples and eventually destabilize the network.
+        if cfg.use_delays:
+            self.delay_buf.fill(0)
+            self.delay_ptr = 0
 
         spike_events_e: List[Tuple[int, int]] = []
         v_trace_subset = None
