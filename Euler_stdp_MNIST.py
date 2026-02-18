@@ -11,22 +11,35 @@ mamba install numpy matplotlib numba scikit-learn tensorflow ipykernel -y
 # %% IMPORTS
 from __future__ import annotations
 
-import os
-import time
+import argparse
+import gzip
 import math
 import json
+import struct
+import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from numba import njit, prange
+try:
+    from numba import njit
+    _HAS_NUMBA = True
+except Exception:
+    _HAS_NUMBA = False
+
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 # Optional: sklearn for confusion matrix
 try:
-    from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score
+    from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
     _HAS_SK = True
 except Exception:
     _HAS_SK = False
@@ -99,16 +112,31 @@ class SimConfig:
     wmin: float = 0.0
     wmax: float = 1.0
 
+    # Fixed recurrent inhibition strengths
+    w_aeai: float = 10.4
+    w_aiae: float = 17.0
+
     # Delays
     max_delay_ms: float = 10.0
     use_delays: bool = True
 
+    # Optional extra input pathway (not active in Diehl-Cook baseline run)
+    use_xeai_input: bool = False
+    xeai_conn_prob: float = 0.1
+
     # Training schedule
     epochs: int = 1
-    train_examples: int = 6000 # max: 60000 for MNIST
-    test_examples: int = 1000  # max: 10000 for MNIST
-    update_interval: int = 1000  # assignment recompute; Diehl and Cook used 10000
+    train_examples: int = 60000 # max: 60000 for MNIST
+    test_examples: int = 10000  # max: 10000 for MNIST
+    update_interval: int = 10000  # assignment recompute
     weight_snapshot_interval: int = 1  # epochs
+
+    # Data loading
+    mnist_data_dir: str = "."
+    mnist_npz_path: str = "./mnist.npz"
+    allow_synthetic_data: bool = False
+    train_hard_reset_state: bool = False
+    test_hard_reset_state: bool = False
 
     # Logging and evaluation
     out_dir: str = "./runs/diehl_cook_euler"
@@ -119,6 +147,7 @@ class SimConfig:
 
     # Receptive field visualization
     rf_grid_sqrt: int = 20  # sqrt(400)=20, arrangement for 2d plots
+    plot_every: int = 100
 
 # %% FUNCTIONS
 # =========================
@@ -157,22 +186,22 @@ def init_weights(cfg: SimConfig, rng: np.random.Generator) -> Dict[str, np.ndarr
     W["XeAe"] *= 0.3  # from random_conn_generator weight['ee_input'] = 0.3
     W["XeAe"] = np.clip(W["XeAe"], cfg.wmin, cfg.wmax)
 
-    # E->I: one to one with weight 10.4 in the generator, but we interpret as conductance increment.
+    # E->I: one to one with 10.4 (original random generator).
     W["AeAi"] = np.zeros((cfg.n_e, cfg.n_i), dtype=np.float32)
     m = min(cfg.n_e, cfg.n_i)
-    W["AeAi"][np.arange(m), np.arange(m)] = 6.0
+    W["AeAi"][np.arange(m), np.arange(m)] = cfg.w_aeai
 
-    # I->E: all to all except diagonal, weight 17
-    W["AiAe"] = (np.ones((cfg.n_i, cfg.n_e), dtype=np.float32) * 8.0)
+    # I->E: all to all except diagonal, weight 17.
+    W["AiAe"] = (np.ones((cfg.n_i, cfg.n_e), dtype=np.float32) * cfg.w_aiae)
     m = min(cfg.n_i, cfg.n_e)
     W["AiAe"][np.arange(m), np.arange(m)] = 0.0
-    
-    # X->I: random + 0.01, scaled by ei_input.
-    W["XeAi"] = rng.random((cfg.n_input, cfg.n_i)).astype(np.float32)
-    W["XeAi"] *= 0.2  # aus random_conn_generator weight['ei_input']=0.2
-    # optional sparsify: p=0.1
-    mask = (rng.random((cfg.n_input, cfg.n_i)) < 0.1)
-    W["XeAi"] *= mask.astype(np.float32)
+
+    # X->I exists in random generator but is not used in spiking_MNIST default path.
+    W["XeAi"] = np.zeros((cfg.n_input, cfg.n_i), dtype=np.float32)
+    if cfg.use_xeai_input:
+        W["XeAi"] = rng.random((cfg.n_input, cfg.n_i)).astype(np.float32) * 0.2
+        mask = (rng.random((cfg.n_input, cfg.n_i)) < cfg.xeai_conn_prob)
+        W["XeAi"] *= mask.astype(np.float32)
 
     return W
 
@@ -315,47 +344,47 @@ def _propagate_sparse(pre_idx: np.ndarray, W: np.ndarray, post_g: np.ndarray) ->
             post_g[j] += W[i, j]
 
 @njit(cache=True)
-def _stdp_update_xe(
+def _stdp_pre_update(
     W: np.ndarray,
     pre_idx: np.ndarray,
+    post1_trace: np.ndarray,
+    nu_pre: float,
+    wmin: float,
+    wmax: float
+) -> None:
+    n_e = W.shape[1]
+    for kk in range(pre_idx.shape[0]):
+        i = pre_idx[kk]
+        for j in range(n_e):
+            w = W[i, j] - (nu_pre * post1_trace[j])
+            if w < wmin:
+                w = wmin
+            elif w > wmax:
+                w = wmax
+            W[i, j] = w
+
+
+@njit(cache=True)
+def _stdp_post_update(
+    W: np.ndarray,
     post_idx: np.ndarray,
     pre_trace: np.ndarray,
-    post1_trace: np.ndarray,
     post2_trace: np.ndarray,
-    nu_pre: float,
     nu_post: float,
     wmin: float,
     wmax: float
 ) -> None:
-    """
-    Implements the Diehl Cook style STDP for X->E using per pre and per post traces.
-
-    Pre event: W[i,:] -= nu_pre * post1_trace[:]
-    Post event: W[:,j] += nu_post * pre_trace[:] * post2before_j
-                then post1[j]=1, post2[j]=1 (handled outside)
-    """
-    n_in, n_e = W.shape
-
-    # LTD on pre spikes
-    for kk in range(pre_idx.shape[0]):
-        i = pre_idx[kk]
-        for j in range(n_e):
-            W[i, j] -= nu_pre * post1_trace[j]
-
-    # LTP on post spikes
+    n_in = W.shape[0]
     for kk in range(post_idx.shape[0]):
         j = post_idx[kk]
         post2before = post2_trace[j]
         for i in range(n_in):
-            W[i, j] += nu_post * pre_trace[i] * post2before
-
-    # clip
-    for i in range(n_in):
-        for j in range(n_e):
-            if W[i, j] < wmin:
-                W[i, j] = wmin
-            elif W[i, j] > wmax:
-                W[i, j] = wmax
+            w = W[i, j] + (nu_post * pre_trace[i] * post2before)
+            if w < wmin:
+                w = wmin
+            elif w > wmax:
+                w = wmax
+            W[i, j] = w
 
 
 # =========================
@@ -432,19 +461,46 @@ class DiehlCookEuler:
         # weights
         self.W = init_weights(cfg, self.rng)
 
-        # delay buffers for X spikes, only for X->E in this starter
+        # delay buffers for X spikes
         self.max_delay_steps = max(1, _steps_from_ms(cfg, cfg.max_delay_ms))
         self.delay_buf = np.zeros((self.max_delay_steps, cfg.n_input), dtype=np.uint8)
+        self.delay_ptr = 0
+        self.input_indices = np.arange(cfg.n_input, dtype=np.int32)
+        if cfg.use_delays:
+            self.input_delay_steps = self.rng.integers(
+                low=0,
+                high=self.max_delay_steps,
+                size=cfg.n_input,
+                endpoint=False
+            ).astype(np.int32)
+        else:
+            self.input_delay_steps = np.zeros(cfg.n_input, dtype=np.int32)
+
+    def reset_dynamic_state(self) -> None:
+        cfg = self.cfg
+        self.v_e.fill(cfg.v_rest_e_mV - 40.0)
+        self.v_i.fill(cfg.v_rest_i_mV - 40.0)
+        self.ge_e.fill(0.0)
+        self.gi_e.fill(0.0)
+        self.ge_i.fill(0.0)
+        self.gi_i.fill(0.0)
+        self.refrac_e.fill(0)
+        self.refrac_i.fill(0)
+        self.pre_trace.fill(0.0)
+        self.post1.fill(0.0)
+        self.post2.fill(0.0)
+        self.delay_buf.fill(0)
         self.delay_ptr = 0
 
     def _delay_push(self, x_spk: np.ndarray) -> None:
         self.delay_buf[self.delay_ptr, :] = x_spk
         self.delay_ptr = (self.delay_ptr + 1) % self.max_delay_steps
 
-    def _delay_pop(self, delay_steps: int) -> np.ndarray:
-        # read spikes that occurred delay_steps ago
-        idx = (self.delay_ptr - delay_steps) % self.max_delay_steps
-        return self.delay_buf[idx, :]
+    def _delay_pop_per_input(self) -> np.ndarray:
+        # read spikes with a per-input random delay.
+        # delay=0 means current step (just pushed), therefore "-1".
+        idx = (self.delay_ptr - self.input_delay_steps - 1) % self.max_delay_steps
+        return self.delay_buf[idx, self.input_indices]
 
     def _rates_from_image(self, img_28x28: np.ndarray, intensity: float) -> np.ndarray:
         rates = (img_28x28.reshape(-1).astype(np.float32) / self.cfg.pixel_divisor) * intensity
@@ -485,7 +541,7 @@ class DiehlCookEuler:
 
             if cfg.use_delays:
                 self._delay_push(x_spk)
-                x_eff = self._delay_pop(delay_steps=self.max_delay_steps - 1)  # crude: maximal delay
+                x_eff = self._delay_pop_per_input()
             else:
                 x_eff = x_spk
 
@@ -494,24 +550,21 @@ class DiehlCookEuler:
             _decay(self.post1, self.alpha_post1)
             _decay(self.post2, self.alpha_post2)
 
-            # update traces on spikes
             pre_idx = np.where(x_eff > 0)[0].astype(np.int32)
-            if pre_idx.size > 0:
-                _propagate_sparse(pre_idx, self.W["XeAi"], self.ge_i)
-                # this drives input to I neurons even when E has not yet learned to respond, 
-                # which is important for stabilizing learning and avoiding all E neurons 
-                # responding to all digits.
-            for i in pre_idx:
-                self.pre_trace[i] = 1.0
+            if training and pre_idx.size > 0:
+                _stdp_pre_update(
+                    self.W["XeAe"], pre_idx, self.post1,
+                    cfg.nu_pre, cfg.wmin, cfg.wmax
+                )
 
             # propagate X->E (excitatory conductance)
             if pre_idx.size > 0:
                 _propagate_sparse(pre_idx, self.W["XeAe"], self.ge_e)
+                for i in pre_idx:
+                    self.pre_trace[i] = 1.0
 
-            # recurrent propagation from previous step spikes is omitted in this starter.
-            # minimal WTA: E->I then I->E using same step spikes.
-            # We compute E spikes, then propagate to I, then I spikes, then inhibit E.
-            # This is an approximation of continuous interaction within dt.
+            if cfg.use_xeai_input and pre_idx.size > 0:
+                _propagate_sparse(pre_idx, self.W["XeAi"], self.ge_i)
 
             # excitatory step
             e_spk = _lif_step_e(
@@ -528,15 +581,15 @@ class DiehlCookEuler:
                 if record_spikes:
                     spike_events_e.append((t, int(j)))
 
-            # post traces
             post_idx = e_idx
+            if training and post_idx.size > 0:
+                _stdp_post_update(
+                    self.W["XeAe"], post_idx, self.pre_trace, self.post2,
+                    cfg.nu_post, cfg.wmin, cfg.wmax
+                )
             for j in post_idx:
-                post2before = self.post2[j]
                 self.post1[j] = 1.0
                 self.post2[j] = 1.0
-                # post2before used in STDP update kernel, stored in post2 before overwriting, but here we overwrite.
-                # in this starter we accept the slight mismatch, and use post2_trace before setting in kernel by
-                # calling kernel before overwriting would be cleaner.
 
             # theta adaptation
             if training:
@@ -563,28 +616,41 @@ class DiehlCookEuler:
             if i_idx.size > 0:
                 _propagate_sparse(i_idx, self.W["AiAe"], self.gi_e)
 
-            # STDP update for X->E
-            if training and (pre_idx.size > 0 or post_idx.size > 0):
-                # In the original: pre event uses post1, post event uses pre and post2before.
-                # Here: we call the kernel before we overwrite post2 to 1 would be more exact.
-                _stdp_update_xe(
-                    self.W["XeAe"], pre_idx, post_idx,
-                    self.pre_trace, self.post1, self.post2,
-                    cfg.nu_pre, cfg.nu_post, cfg.wmin, cfg.wmax)
-
             if record_v and v_trace_subset is not None:
                 v_trace_subset[t, :] = self.v_e[v_subset_idx]
 
-        # rest period, no input, just decay dynamics
+        # rest period, no input
         for _ in range(self.steps_rest):
-            # decay conductances
-            self.ge_e *= math.exp(-cfg.dt_ms / cfg.tau_ge_ms)
-            self.gi_e *= math.exp(-cfg.dt_ms / cfg.tau_gi_ms)
-            self.ge_i *= math.exp(-cfg.dt_ms / cfg.tau_ge_ms)
-            self.gi_i *= math.exp(-cfg.dt_ms / cfg.tau_gi_ms)
-            # relax voltages toward rest
-            self.v_e += (cfg.dt_ms / cfg.tau_v_e_ms) * (cfg.v_rest_e_mV - self.v_e)
-            self.v_i += (cfg.dt_ms / cfg.tau_v_i_ms) * (cfg.v_rest_i_mV - self.v_i)
+            _decay(self.pre_trace, self.alpha_pre)
+            _decay(self.post1, self.alpha_post1)
+            _decay(self.post2, self.alpha_post2)
+
+            e_spk = _lif_step_e(
+                self.v_e, self.ge_e, self.gi_e, self.theta, self.refrac_e,
+                cfg.dt_ms, cfg.v_rest_e_mV, cfg.tau_v_e_ms, cfg.v_reset_e_mV,
+                cfg.v_thresh_e_base_mV, cfg.offset_mV, cfg.tau_ge_ms, cfg.tau_gi_ms,
+                cfg.e_inh_e_mV
+            )
+            e_idx = np.where(e_spk > 0)[0].astype(np.int32)
+            for j in e_idx:
+                self.refrac_e[j] = self.refrac_e_steps
+            if training:
+                for j in e_idx:
+                    self.theta[j] += cfg.theta_plus_mV
+                self.theta *= math.exp(-cfg.dt_ms / cfg.tc_theta_ms)
+            if e_idx.size > 0:
+                _propagate_sparse(e_idx, self.W["AeAi"], self.ge_i)
+
+            i_spk = _lif_step_i(
+                self.v_i, self.ge_i, self.gi_i, self.refrac_i,
+                cfg.dt_ms, cfg.v_rest_i_mV, cfg.tau_v_i_ms, cfg.v_reset_i_mV,
+                cfg.v_thresh_i_mV, cfg.tau_ge_ms, cfg.tau_gi_ms, cfg.e_inh_i_mV
+            )
+            i_idx = np.where(i_spk > 0)[0].astype(np.int32)
+            for j in i_idx:
+                self.refrac_i[j] = self.refrac_i_steps
+            if i_idx.size > 0:
+                _propagate_sparse(i_idx, self.W["AiAe"], self.gi_e)
 
         return {
             "label": int(label),
@@ -666,203 +732,379 @@ def weight_statistics(W: np.ndarray) -> Tuple[float, float, float]:
     l2 = float(np.sqrt(np.mean(W * W)))
     return mean, l1, l2
 
-# %% MAIN
-# =========================
-# Main
-# =========================
+def _open_binary_file(path: Path):
+    if path.suffix == ".gz":
+        return gzip.open(path, "rb")
+    return open(path, "rb")
 
 
-cfg = SimConfig()
+def _read_idx_images(path: Path) -> np.ndarray:
+    with _open_binary_file(path) as f:
+        magic, n, rows, cols = struct.unpack(">IIII", f.read(16))
+        if magic != 2051:
+            raise ValueError(f"invalid IDX image file magic in {path}: {magic}")
+        data = np.frombuffer(f.read(n * rows * cols), dtype=np.uint8)
+    return data.reshape(n, rows, cols)
 
-#run_dir = Path(cfg.out_dir) / _now_str()
-run_dir = Path(cfg.out_dir)
-_ensure_dir(run_dir)
-_ensure_dir(run_dir / "plots")
-_ensure_dir(run_dir / "snapshots")
-_ensure_dir(run_dir / "logs")
 
-with open(run_dir / "config.json", "w") as f:
-    json.dump(asdict(cfg), f, indent=2)
+def _read_idx_labels(path: Path) -> np.ndarray:
+    with _open_binary_file(path) as f:
+        magic, n = struct.unpack(">II", f.read(8))
+        if magic != 2049:
+            raise ValueError(f"invalid IDX label file magic in {path}: {magic}")
+        data = np.frombuffer(f.read(n), dtype=np.uint8)
+    return data
 
-if not _HAS_KERAS:
-    raise RuntimeError("tensorflow.keras not available. Install tensorflow or use an alternative MNIST loader.")
 
-(x_train, y_train), (x_test, y_test) = mnist.load_data()
-x_train = x_train.astype(np.uint8)
-x_test = x_test.astype(np.uint8)
-y_train = y_train.astype(np.int32)
-y_test = y_test.astype(np.int32)
+def _find_first_existing(base_dir: Path, names: List[str]) -> Optional[Path]:
+    for name in names:
+        p = base_dir / name
+        if p.exists():
+            return p
+        gz = base_dir / f"{name}.gz"
+        if gz.exists():
+            return gz
+    return None
 
-# plot some examples
-for k in range(5):
-    plot_image(x_train[k], y_train[k], f"train example {k}", run_dir / "plots" / f"train_example_{k}.png")
-    plot_image(x_test[k], y_test[k], f"test example {k}", run_dir / "plots" / f"test_example_{k}.png")
 
-trainer = DiehlCookEuler(cfg)
+def _load_mnist_from_idx_dir(base_dir: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]]:
+    train_img = _find_first_existing(base_dir, ["train-images-idx3-ubyte", "train-images.idx3-ubyte"])
+    train_lbl = _find_first_existing(base_dir, ["train-labels-idx1-ubyte", "train-labels.idx1-ubyte"])
+    test_img = _find_first_existing(base_dir, ["t10k-images-idx3-ubyte", "t10k-images.idx3-ubyte"])
+    test_lbl = _find_first_existing(base_dir, ["t10k-labels-idx1-ubyte", "t10k-labels.idx1-ubyte"])
+    if None in (train_img, train_lbl, test_img, test_lbl):
+        return None
+    x_train = _read_idx_images(train_img)  # type: ignore[arg-type]
+    y_train = _read_idx_labels(train_lbl)  # type: ignore[arg-type]
+    x_test = _read_idx_images(test_img)    # type: ignore[arg-type]
+    y_test = _read_idx_labels(test_lbl)    # type: ignore[arg-type]
+    return (x_train, y_train), (x_test, y_test), f"idx:{base_dir}"
 
-# normalize X->E weights to have L1 norm of 78 per column, as in the original 
-# code with ee_input=0.3 and pixel divisor 8, but here we keep weights in [0,1] 
-# and treat scaling via input rates:
-normalize_columns_l1(trainer.W["XeAe"], target_sum=78.0)
 
-weight_stats = {"mean": [], "l1": [], "l2": []}
+def _load_mnist_from_npz(path: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]]:
+    if not path.exists():
+        return None
+    data = np.load(path)
+    required = {"x_train", "y_train", "x_test", "y_test"}
+    if not required.issubset(set(data.keys())):
+        return None
+    return (data["x_train"], data["y_train"]), (data["x_test"], data["y_test"]), f"npz:{path}"
 
-# main loop over epochs and examples
-for ep in range(cfg.epochs):
-    print(f"Epoch {ep+1}/{cfg.epochs}")
 
-    # =====================
-    # Train
-    # =====================
-    train_n = min(cfg.train_examples, x_train.shape[0])
-    result_monitor = np.zeros((train_n, cfg.n_e), dtype=np.int32)
-    train_labels = np.zeros(train_n, dtype=np.int32)
+def _load_mnist(cfg: SimConfig) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]:
+    candidate_dirs: List[Path] = []
+    seen = set()
+    for p in [Path(cfg.mnist_data_dir), Path.cwd(), Path("original_implementation_2015")]:
+        r = p.resolve()
+        if str(r) not in seen:
+            seen.add(str(r))
+            candidate_dirs.append(r)
 
-    input_intensity = cfg.input_intensity
+    for d in candidate_dirs:
+        out = _load_mnist_from_idx_dir(d)
+        if out is not None:
+            return out
 
-    for k in range(train_n):
-        img = x_train[k]
-        label = int(y_train[k])
+    npz_candidates = [Path(cfg.mnist_npz_path)]
+    for d in candidate_dirs:
+        npz_candidates.append(d / "mnist.npz")
+    for p in npz_candidates:
+        out = _load_mnist_from_npz(p)
+        if out is not None:
+            return out
 
-        # adaptive intensity loop
-        while True:
-            normalize_columns_l1(trainer.W["XeAe"], target_sum=78.0)
-            
-            rec_v = (cfg.record_v_example_every > 0 and (k % cfg.record_v_example_every == 0))
-            out = trainer.run_one_example(
-                img=img, label=label, training=True,
-                input_intensity=input_intensity,
-                record_spikes=cfg.record_spikes,
-                record_v=rec_v
-            )
-            sc = out["spike_count_e"]
-            # some debug prints:
-            print(  "k", k,
-                    "sum_spk", int(sc.sum()),
-                    "active", int(np.count_nonzero(sc)),
-                    "theta_mean", float(trainer.theta.mean()),
-                    "theta_max", float(trainer.theta.max()),
-                )
-            
-            if sc.sum() < 5:
-                input_intensity += 1.0
-                continue
-            break
+    if _HAS_KERAS:
+        (x_train, y_train), (x_test, y_test) = mnist.load_data()
+        return (x_train, y_train), (x_test, y_test), "keras"
 
-        result_monitor[k, :] = sc
-        train_labels[k] = label
+    if cfg.allow_synthetic_data:
+        rng = np.random.default_rng(cfg.seed)
+        n_train = max(cfg.train_examples, 1000)
+        n_test = max(cfg.test_examples, 200)
+        x_train = rng.integers(0, 256, size=(n_train, 28, 28), dtype=np.uint8)
+        y_train = rng.integers(0, 10, size=(n_train,), dtype=np.int32)
+        x_test = rng.integers(0, 256, size=(n_test, 28, 28), dtype=np.uint8)
+        y_test = rng.integers(0, 10, size=(n_test,), dtype=np.int32)
+        return (x_train, y_train), (x_test, y_test), "synthetic"
 
-        if (cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)):
-            plot_image(img, label, f"train ep{ep} ex{k}", run_dir / "plots" / f"train_img_ep{ep}_ex{k}.png")
-            plot_raster(out["spike_events_e"], 
-                        title=f"train raster ep{ep} ex{k}", 
-                        out_png=run_dir / "plots" / f"train_raster_ep{ep}_ex{k}.png", cfg=cfg)
-            
-            ev = out["spike_events_e"]
-            if ev is None or ev.size == 0:
-                print("no spike events")
-            else:
-                t = ev[:, 0]
-                print("k:", k,
-                      "  events", ev.shape[0],
-                      "  t_min", int(t.min()),
-                      "  t_max", int(t.max()),
-                      "  t_unique", int(np.unique(t).size))
+    raise RuntimeError(
+        "MNIST dataset not found. Provide IDX files (train/t10k) in --mnist-data-dir, "
+        "or provide --mnist-npz-path, or install tensorflow.keras."
+    )
 
-        if k % 500 == 0 and k > 0:
-            print(f"  train example {k}/{train_n} ({(k/train_n)*100:.2f}%)")
 
-        input_intensity = cfg.input_intensity
+def _build_cfg_from_cli() -> SimConfig:
+    parser = argparse.ArgumentParser(description="Euler-based Diehl & Cook STDP MNIST")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--train-examples", type=int, default=None)
+    parser.add_argument("--test-examples", type=int, default=None)
+    parser.add_argument("--update-interval", type=int, default=None)
+    parser.add_argument("--plot-every", type=int, default=None)
+    parser.add_argument("--out-dir", type=str, default=None)
+    parser.add_argument("--mnist-data-dir", type=str, default=None)
+    parser.add_argument("--mnist-npz-path", type=str, default=None)
+    parser.add_argument("--input-intensity", type=float, default=None)
+    parser.add_argument("--w-aeai", type=float, default=None)
+    parser.add_argument("--w-aiae", type=float, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--use-xeai-input", action="store_true")
+    parser.add_argument("--no-delays", action="store_true")
+    parser.add_argument("--no-record-spikes", action="store_true")
+    parser.add_argument("--train-hard-reset-state", action="store_true")
+    parser.add_argument("--test-hard-reset-state", action="store_true")
+    parser.add_argument("--allow-synthetic-data", action="store_true")
+    args = parser.parse_args()
 
-    assignments = compute_assignments(result_monitor, train_labels, cfg.n_e)
-    np.save(run_dir / "logs" / f"assignments_ep{ep}.npy", assignments)
+    cfg = SimConfig()
+    if args.epochs is not None:
+        cfg.epochs = args.epochs
+    if args.train_examples is not None:
+        cfg.train_examples = args.train_examples
+    if args.test_examples is not None:
+        cfg.test_examples = args.test_examples
+    if args.update_interval is not None:
+        cfg.update_interval = args.update_interval
+    if args.plot_every is not None:
+        cfg.plot_every = args.plot_every
+    if args.out_dir is not None:
+        cfg.out_dir = args.out_dir
+    if args.mnist_data_dir is not None:
+        cfg.mnist_data_dir = args.mnist_data_dir
+    if args.mnist_npz_path is not None:
+        cfg.mnist_npz_path = args.mnist_npz_path
+    if args.input_intensity is not None:
+        cfg.input_intensity = args.input_intensity
+    if args.w_aeai is not None:
+        cfg.w_aeai = args.w_aeai
+    if args.w_aiae is not None:
+        cfg.w_aiae = args.w_aiae
+    if args.seed is not None:
+        cfg.seed = args.seed
+    if args.use_xeai_input:
+        cfg.use_xeai_input = True
+    if args.no_delays:
+        cfg.use_delays = False
+    if args.no_record_spikes:
+        cfg.record_spikes = False
+    if args.train_hard_reset_state:
+        cfg.train_hard_reset_state = True
+    if args.test_hard_reset_state:
+        cfg.test_hard_reset_state = True
+    if args.allow_synthetic_data:
+        cfg.allow_synthetic_data = True
+    return cfg
 
-    # weight stats and snapshots
-    m, l1, l2 = weight_statistics(trainer.W["XeAe"])
-    weight_stats["mean"].append(m)
-    weight_stats["l1"].append(l1)
-    weight_stats["l2"].append(l2)
 
-    np.save(run_dir / "snapshots" / f"W_XeAe_ep{ep}.npy", trainer.W["XeAe"])
-    np.save(run_dir / "snapshots" / f"theta_ep{ep}.npy", trainer.theta)
-
-    plot_receptive_fields(trainer.W["XeAe"], cfg, run_dir / "plots" / f"rf_ep{ep}.png", f"receptive fields epoch {ep}")
-    plot_weight_stats(weight_stats, run_dir / "plots" / "weight_stats.png")
-
-    # =====================
-    # Test
-    # =====================
-    test_n = min(cfg.test_examples, x_test.shape[0])
-    y_true = np.zeros(test_n, dtype=np.int32)
-    y_pred = np.zeros(test_n, dtype=np.int32)
-
-    for k in range(test_n):
-        img = x_test[k]
-        label = int(y_test[k])
-
-        out = trainer.run_one_example(
-            img=img, label=label, training=False,
-            input_intensity=cfg.input_intensity,
-            record_spikes=(cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)),
-            record_v=False
-        )
-        sc = out["spike_count_e"].astype(np.float32)
-        ranking = rank_digits(assignments, sc)
-        pred = int(ranking[0])
-        
-        # debug stats:
-        print(
-            "sum_spk", int(sc.sum()),
-            "active", int(np.count_nonzero(sc)),
-            "max", int(sc.max()),
-            "ge_mean", float(trainer.ge_e.mean()),
-            "gi_mean", float(trainer.gi_e.mean()),
-            "theta_min_mean_max",
-            float(trainer.theta.min()), float(trainer.theta.mean()), float(trainer.theta.max()),
-        )
-
-        y_true[k] = label
-        y_pred[k] = pred
-
-        if (cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)):
-            plot_image(img, label, f"test ep{ep} ex{k}", run_dir / "plots" / f"test_img_ep{ep}_ex{k}.png")
-            plot_raster(out["spike_events_e"], 
-                        title=f"test raster ep{ep} ex{k}", 
-                        out_png=run_dir / "plots" / f"test_raster_ep{ep}_ex{k}.png", 
-                        cfg=cfg)
-
-        if k % 500 == 0 and k > 0:
-            print(f"  test example {k}/{test_n} ({(k/test_n)*100:.2f}%)")
-
-    acc = float((y_true == y_pred).mean())
-    print(f"Epoch {ep} test accuracy: {acc:.4f}")
-
-    with open(run_dir / "logs" / f"metrics_ep{ep}.json", "w") as f:
-        json.dump({"epoch": ep, "accuracy": acc}, f, indent=2)
-
+def _save_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path, title: str) -> None:
     if _HAS_SK:
         cm = confusion_matrix(y_true, y_pred, labels=np.arange(10))
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=np.arange(10))
         fig, ax = plt.subplots(figsize=(6, 6))
         disp.plot(ax=ax, cmap="Blues", colorbar=False)
-        ax.set_title(f"confusion matrix epoch {ep}, acc={acc:.3f}")
+        ax.set_title(title)
         fig.tight_layout()
-        fig.savefig(run_dir / "plots" / f"confusion_matrix_ep{ep}.png", dpi=200)
+        fig.savefig(out_path, dpi=200)
         plt.close(fig)
-    else:
-        # minimal confusion plot without sklearn
-        cm = np.zeros((10, 10), dtype=np.int32)
-        for a, b in zip(y_true, y_pred):
-            cm[a, b] += 1
-        plt.figure(figsize=(6, 6))
-        plt.imshow(cm, interpolation="nearest")
-        plt.title(f"confusion matrix epoch {ep}, acc={acc:.3f}")
-        plt.xlabel("pred")
-        plt.ylabel("true")
-        plt.colorbar()
-        plt.tight_layout()
-        plt.savefig(run_dir / "plots" / f"confusion_matrix_ep{ep}.png", dpi=200)
-        plt.close()
+        return
 
-print(f"Done. Outputs in {run_dir}")
-# %% END
+    cm = np.zeros((10, 10), dtype=np.int32)
+    for a, b in zip(y_true, y_pred):
+        cm[a, b] += 1
+    plt.figure(figsize=(6, 6))
+    plt.imshow(cm, interpolation="nearest")
+    plt.title(title)
+    plt.xlabel("pred")
+    plt.ylabel("true")
+    plt.colorbar()
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=200)
+    plt.close()
+
+
+def main() -> None:
+    cfg = _build_cfg_from_cli()
+    run_dir = Path(cfg.out_dir)
+    _ensure_dir(run_dir)
+    _ensure_dir(run_dir / "plots")
+    _ensure_dir(run_dir / "snapshots")
+    _ensure_dir(run_dir / "logs")
+
+    with open(run_dir / "config.json", "w") as f:
+        json.dump(asdict(cfg), f, indent=2)
+
+    (x_train, y_train), (x_test, y_test), source = _load_mnist(cfg)
+    x_train = x_train.astype(np.uint8)
+    x_test = x_test.astype(np.uint8)
+    y_train = y_train.astype(np.int32).reshape(-1)
+    y_test = y_test.astype(np.int32).reshape(-1)
+    print(f"Loaded MNIST source={source} train={x_train.shape} test={x_test.shape}")
+
+    for k in range(min(5, x_train.shape[0], x_test.shape[0])):
+        plot_image(x_train[k], y_train[k], f"train example {k}", run_dir / "plots" / f"train_example_{k}.png")
+        plot_image(x_test[k], y_test[k], f"test example {k}", run_dir / "plots" / f"test_example_{k}.png")
+
+    trainer = DiehlCookEuler(cfg)
+    normalize_columns_l1(trainer.W["XeAe"], target_sum=78.0)
+    weight_stats = {"mean": [], "l1": [], "l2": []}
+
+    for ep in range(cfg.epochs):
+        print(f"Epoch {ep+1}/{cfg.epochs}")
+        train_n = min(cfg.train_examples, x_train.shape[0])
+        result_monitor = np.zeros((train_n, cfg.n_e), dtype=np.int32)
+        train_labels = np.zeros(train_n, dtype=np.int32)
+        train_sum_spk = np.zeros(train_n, dtype=np.int32)
+        train_active = np.zeros(train_n, dtype=np.int32)
+
+        input_intensity = cfg.input_intensity
+        for k in range(train_n):
+            if cfg.train_hard_reset_state:
+                trainer.reset_dynamic_state()
+            img = x_train[k]
+            label = int(y_train[k])
+            retries = 0
+            while True:
+                normalize_columns_l1(trainer.W["XeAe"], target_sum=78.0)
+                rec_v = (cfg.record_v_example_every > 0 and (k % cfg.record_v_example_every == 0))
+                out = trainer.run_one_example(
+                    img=img,
+                    label=label,
+                    training=True,
+                    input_intensity=input_intensity,
+                    record_spikes=cfg.record_spikes,
+                    record_v=rec_v
+                )
+                sc = out["spike_count_e"]
+                sum_spk = int(sc.sum())
+                if sum_spk < 5:
+                    retries += 1
+                    input_intensity += 1.0
+                    continue
+                break
+
+            result_monitor[k, :] = sc
+            train_labels[k] = label
+            train_sum_spk[k] = sum_spk
+            train_active[k] = int(np.count_nonzero(sc))
+
+            if cfg.plot_every > 0 and ((k + 1) % cfg.plot_every == 0):
+                plot_receptive_fields(
+                    trainer.W["XeAe"], cfg,
+                    run_dir / "plots" / f"rf_ep{ep}_ex{k+1:05d}.png",
+                    f"receptive fields epoch={ep} ex={k+1}"
+                )
+
+            if (cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)):
+                plot_image(img, label, f"train ep{ep} ex{k}", run_dir / "plots" / f"train_img_ep{ep}_ex{k}.png")
+                plot_raster(
+                    out["spike_events_e"],
+                    title=f"train raster ep{ep} ex{k}",
+                    out_png=run_dir / "plots" / f"train_raster_ep{ep}_ex{k}.png",
+                    cfg=cfg,
+                )
+
+            if k == 0 or ((k + 1) % 100 == 0):
+                print(
+                    f"  train ex {k+1}/{train_n} sum_spk={sum_spk} active={train_active[k]} "
+                    f"retries={retries} theta_mean={trainer.theta.mean():.3f} theta_max={trainer.theta.max():.3f}"
+                )
+
+            if cfg.update_interval > 0 and ((k + 1) % cfg.update_interval == 0):
+                w0 = k + 1 - cfg.update_interval
+                w1 = k + 1
+                s = train_sum_spk[w0:w1]
+                a = train_active[w0:w1]
+                print(
+                    f"  train window [{w0}:{w1}] mean_sum={s.mean():.2f} min_sum={s.min()} max_sum={s.max()} "
+                    f"mean_active={a.mean():.2f}"
+                )
+
+            input_intensity = cfg.input_intensity
+
+        assignments = compute_assignments(result_monitor, train_labels, cfg.n_e)
+        np.save(run_dir / "logs" / f"assignments_ep{ep}.npy", assignments)
+        np.save(run_dir / "logs" / f"train_sum_spk_ep{ep}.npy", train_sum_spk)
+        np.save(run_dir / "logs" / f"train_active_ep{ep}.npy", train_active)
+
+        m, l1, l2 = weight_statistics(trainer.W["XeAe"])
+        weight_stats["mean"].append(m)
+        weight_stats["l1"].append(l1)
+        weight_stats["l2"].append(l2)
+        np.save(run_dir / "snapshots" / f"W_XeAe_ep{ep}.npy", trainer.W["XeAe"])
+        np.save(run_dir / "snapshots" / f"theta_ep{ep}.npy", trainer.theta)
+        plot_receptive_fields(trainer.W["XeAe"], cfg, run_dir / "plots" / f"rf_ep{ep}.png", f"receptive fields epoch {ep}")
+        plot_weight_stats(weight_stats, run_dir / "plots" / "weight_stats.png")
+
+        test_n = min(cfg.test_examples, x_test.shape[0])
+        y_true = np.zeros(test_n, dtype=np.int32)
+        y_pred = np.zeros(test_n, dtype=np.int32)
+        test_sum_spk = np.zeros(test_n, dtype=np.int32)
+        test_active = np.zeros(test_n, dtype=np.int32)
+
+        for k in range(test_n):
+            if cfg.test_hard_reset_state:
+                trainer.reset_dynamic_state()
+            img = x_test[k]
+            label = int(y_test[k])
+            out = trainer.run_one_example(
+                img=img,
+                label=label,
+                training=False,
+                input_intensity=cfg.input_intensity,
+                record_spikes=(cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)),
+                record_v=False
+            )
+            sc = out["spike_count_e"].astype(np.float32)
+            ranking = rank_digits(assignments, sc)
+            y_true[k] = label
+            y_pred[k] = int(ranking[0])
+            test_sum_spk[k] = int(sc.sum())
+            test_active[k] = int(np.count_nonzero(sc))
+
+            if (cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)):
+                plot_image(img, label, f"test ep{ep} ex{k}", run_dir / "plots" / f"test_img_ep{ep}_ex{k}.png")
+                plot_raster(
+                    out["spike_events_e"],
+                    title=f"test raster ep{ep} ex{k}",
+                    out_png=run_dir / "plots" / f"test_raster_ep{ep}_ex{k}.png",
+                    cfg=cfg,
+                )
+
+            if k == 0 or ((k + 1) % 100 == 0):
+                print(
+                    f"  test ex {k+1}/{test_n} sum_spk={test_sum_spk[k]} active={test_active[k]} "
+                    f"theta_mean={trainer.theta.mean():.3f}"
+                )
+
+        acc = float((y_true == y_pred).mean())
+        print(f"Epoch {ep} test accuracy: {acc:.4f}")
+        print(
+            f"Epoch {ep} train spikes mean={train_sum_spk.mean():.2f} min={train_sum_spk.min()} max={train_sum_spk.max()} "
+            f"test spikes mean={test_sum_spk.mean():.2f}"
+        )
+
+        metrics = {
+            "epoch": ep,
+            "accuracy": acc,
+            "train_spike_sum_mean": float(train_sum_spk.mean()),
+            "train_spike_sum_min": int(train_sum_spk.min()),
+            "train_spike_sum_max": int(train_sum_spk.max()),
+            "train_active_mean": float(train_active.mean()),
+            "test_spike_sum_mean": float(test_sum_spk.mean()),
+            "test_spike_sum_min": int(test_sum_spk.min()),
+            "test_spike_sum_max": int(test_sum_spk.max()),
+            "test_active_mean": float(test_active.mean()),
+        }
+        with open(run_dir / "logs" / f"metrics_ep{ep}.json", "w") as f:
+            json.dump(metrics, f, indent=2)
+
+        _save_confusion_matrix(
+            y_true, y_pred,
+            run_dir / "plots" / f"confusion_matrix_ep{ep}.png",
+            f"confusion matrix epoch {ep}, acc={acc:.3f}"
+        )
+
+    print(f"Done. Outputs in {run_dir}")
+
+
+if __name__ == "__main__":
+    main()
