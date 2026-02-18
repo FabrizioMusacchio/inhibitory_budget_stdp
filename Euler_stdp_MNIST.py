@@ -161,6 +161,7 @@ class SimConfig:
     test_examples: int = 10000  # max: 10000 for MNIST
     update_interval: int = 10000  # assignment recompute
     weight_snapshot_interval: int = 1  # epochs
+    weight_stats_every: int = 100
 
     # Data loading
     mnist_data_dir: str = "."
@@ -755,13 +756,69 @@ def plot_receptive_fields(W_xe: np.ndarray, cfg: SimConfig, out_png: Path, title
 
 def plot_weight_stats(stats: Dict[str, List[float]], out_png: Path) -> None:
     epochs = np.arange(len(stats["mean"]))
+    if epochs.size == 0:
+        return
     plt.figure(figsize=(7, 4))
-    plt.plot(epochs, stats["mean"], label="mean")
-    plt.plot(epochs, stats["l1"], label="l1 mean per synapse")
-    plt.plot(epochs, stats["l2"], label="l2 rms per synapse")
-    plt.xlabel("epoch")
-    plt.ylabel("weight statistic")
-    plt.legend()
+    ax1 = plt.gca()
+    color1 = 'tab:blue'
+    color3 = 'tab:green'
+    ax1.plot(epochs, stats["l1"], marker="o", label="l1 mean per synapse", color=color1)
+    ax1.plot(epochs, stats["l2"], marker="o", label="l2 rms per synapse", color=color3)
+    ax1.set_xlabel("epoch")
+    ax1.set_ylabel("l1/l2", color=color1)
+    ax1.tick_params(axis='y', labelcolor=color1)
+    
+    ax2 = ax1.twinx()
+    color2 = 'tab:orange'
+    ax2.plot(epochs, stats["mean"], marker="o", label="mean", color=color2)
+    ax2.set_ylabel("mean weight", color=color2)
+    ax2.tick_params(axis='y', labelcolor=color2)
+    
+    ax1.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=200)
+    plt.close()
+
+
+def plot_weight_stats_iterations(stats: Dict[str, List[float]], out_png: Path) -> None:
+    iterations = np.asarray(stats["iteration"], dtype=np.int32)
+    if iterations.size == 0:
+        return
+    plt.figure(figsize=(7, 4))
+    ax1 = plt.gca()
+    color1 = 'tab:blue'
+    color3 = 'tab:green'
+    ax1.plot(iterations, stats["l1"], marker="o", label="l1 mean per synapse", color=color1)
+    ax1.plot(iterations, stats["l2"], marker="o", label="l2 rms per synapse", color=color3)
+    ax1.set_xlabel("iteration")
+    ax1.set_ylabel("l1/l2", color=color1)
+    ax1.tick_params(axis='y', labelcolor=color1)
+    
+    ax2 = ax1.twinx()
+    color2 = 'tab:orange'
+    ax2.plot(iterations, stats["mean"], marker="o", label="mean", color=color2)
+    ax2.set_ylabel("mean weight", color=color2)
+    ax2.tick_params(axis='y', labelcolor=color2)
+    ax2.set_ylim(0.0, 1.0)
+    
+    ax1.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=200)
+    plt.close()
+
+
+def plot_accuracy_iterations(iterations: List[int], accuracies: List[float], out_png: Path) -> None:
+    it = np.asarray(iterations, dtype=np.int32)
+    acc = np.asarray(accuracies, dtype=np.float32)
+    if it.size == 0:
+        return
+    plt.figure(figsize=(7, 4))
+    plt.plot(it, acc * 100.0, marker="o")
+    plt.xlabel("iteration")
+    plt.ylabel("accuracy (%)")
+    plt.ylim(0.0, 100.0)
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
@@ -880,6 +937,7 @@ def _build_cfg_from_cli() -> SimConfig:
     parser.add_argument("--test-examples", type=int, default=None)
     parser.add_argument("--update-interval", type=int, default=None)
     parser.add_argument("--plot-every", type=int, default=None)
+    parser.add_argument("--weight-stats-every", type=int, default=None)
     parser.add_argument("--out-dir", type=str, default=None)
     parser.add_argument("--mnist-data-dir", type=str, default=None)
     parser.add_argument("--mnist-npz-path", type=str, default=None)
@@ -906,6 +964,8 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.update_interval = args.update_interval
     if args.plot_every is not None:
         cfg.plot_every = args.plot_every
+    if args.weight_stats_every is not None:
+        cfg.weight_stats_every = args.weight_stats_every
     if args.out_dir is not None:
         cfg.out_dir = args.out_dir
     if args.mnist_data_dir is not None:
@@ -985,15 +1045,20 @@ def main() -> None:
 
     trainer = DiehlCookEuler(cfg)
     normalize_columns_l1(trainer.W["XeAe"], target_sum=78.0)
-    weight_stats = {"mean": [], "l1": [], "l2": []}
+    weight_stats_epoch = {"mean": [], "l1": [], "l2": []}
+    weight_stats_iter = {"iteration": [], "mean": [], "l1": [], "l2": []}
+    train_acc_iterations: List[int] = []
+    train_acc_values: List[float] = []
 
     for ep in range(cfg.epochs):
         print(f"Epoch {ep+1}/{cfg.epochs}")
         train_n = min(cfg.train_examples, x_train.shape[0])
         result_monitor = np.zeros((train_n, cfg.n_e), dtype=np.int32)
         train_labels = np.zeros(train_n, dtype=np.int32)
+        train_pred = np.zeros(train_n, dtype=np.int32)
         train_sum_spk = np.zeros(train_n, dtype=np.int32)
         train_active = np.zeros(train_n, dtype=np.int32)
+        online_assignments = np.zeros(cfg.n_e, dtype=np.int32)
 
         input_intensity = cfg.input_intensity
         for k in range(train_n):
@@ -1025,6 +1090,15 @@ def main() -> None:
             train_labels[k] = label
             train_sum_spk[k] = sum_spk
             train_active[k] = int(np.count_nonzero(sc))
+            train_pred[k] = int(rank_digits(online_assignments, sc.astype(np.float32))[0])
+
+            global_iter = ep * train_n + (k + 1)
+            if cfg.weight_stats_every > 0 and ((k + 1) % cfg.weight_stats_every == 0):
+                m_i, l1_i, l2_i = weight_statistics(trainer.W["XeAe"])
+                weight_stats_iter["iteration"].append(global_iter)
+                weight_stats_iter["mean"].append(m_i)
+                weight_stats_iter["l1"].append(l1_i)
+                weight_stats_iter["l2"].append(l2_i)
 
             if cfg.plot_every > 0 and ((k + 1) % cfg.plot_every == 0):
                 plot_receptive_fields(
@@ -1053,26 +1127,54 @@ def main() -> None:
                 w1 = k + 1
                 s = train_sum_spk[w0:w1]
                 a = train_active[w0:w1]
+                window_acc = float((train_pred[w0:w1] == train_labels[w0:w1]).mean())
+                train_acc_iterations.append(global_iter)
+                train_acc_values.append(window_acc)
+                online_assignments = compute_assignments(result_monitor[w0:w1], train_labels[w0:w1], cfg.n_e)
                 print(
                     f"  train window [{w0}:{w1}] mean_sum={s.mean():.2f} min_sum={s.min()} max_sum={s.max()} "
-                    f"mean_active={a.mean():.2f}"
+                    f"mean_active={a.mean():.2f} acc={window_acc*100.0:.2f}%"
                 )
 
             input_intensity = cfg.input_intensity
+
+        if cfg.update_interval > 0 and (train_n % cfg.update_interval) != 0:
+            w0 = (train_n // cfg.update_interval) * cfg.update_interval
+            w1 = train_n
+            if w1 > w0:
+                window_acc = float((train_pred[w0:w1] == train_labels[w0:w1]).mean())
+                train_acc_iterations.append(ep * train_n + w1)
+                train_acc_values.append(window_acc)
+                online_assignments = compute_assignments(result_monitor[w0:w1], train_labels[w0:w1], cfg.n_e)
+                print(f"  train window [{w0}:{w1}] acc={window_acc*100.0:.2f}%")
+
+        if cfg.weight_stats_every > 0:
+            last_iter = ep * train_n + train_n
+            if len(weight_stats_iter["iteration"]) == 0 or weight_stats_iter["iteration"][-1] != last_iter:
+                m_i, l1_i, l2_i = weight_statistics(trainer.W["XeAe"])
+                weight_stats_iter["iteration"].append(last_iter)
+                weight_stats_iter["mean"].append(m_i)
+                weight_stats_iter["l1"].append(l1_i)
+                weight_stats_iter["l2"].append(l2_i)
 
         assignments = compute_assignments(result_monitor, train_labels, cfg.n_e)
         np.save(run_dir / "logs" / f"assignments_ep{ep}.npy", assignments)
         np.save(run_dir / "logs" / f"train_sum_spk_ep{ep}.npy", train_sum_spk)
         np.save(run_dir / "logs" / f"train_active_ep{ep}.npy", train_active)
+        np.save(run_dir / "logs" / f"train_pred_ep{ep}.npy", train_pred)
+        np.save(run_dir / "logs" / "train_accuracy_iterations.npy", np.asarray(train_acc_iterations, dtype=np.int32))
+        np.save(run_dir / "logs" / "train_accuracy_values.npy", np.asarray(train_acc_values, dtype=np.float32))
 
         m, l1, l2 = weight_statistics(trainer.W["XeAe"])
-        weight_stats["mean"].append(m)
-        weight_stats["l1"].append(l1)
-        weight_stats["l2"].append(l2)
+        weight_stats_epoch["mean"].append(m)
+        weight_stats_epoch["l1"].append(l1)
+        weight_stats_epoch["l2"].append(l2)
         np.save(run_dir / "snapshots" / f"W_XeAe_ep{ep}.npy", trainer.W["XeAe"])
         np.save(run_dir / "snapshots" / f"theta_ep{ep}.npy", trainer.theta)
         plot_receptive_fields(trainer.W["XeAe"], cfg, run_dir / "plots" / f"rf_ep{ep}.png", f"receptive fields epoch {ep}")
-        plot_weight_stats(weight_stats, run_dir / "plots" / "weight_stats.png")
+        plot_weight_stats(weight_stats_epoch, run_dir / "plots" / "weight_stats.png")
+        plot_weight_stats_iterations(weight_stats_iter, run_dir / "plots" / "weight_stats_iterations.png")
+        plot_accuracy_iterations(train_acc_iterations, train_acc_values, run_dir / "plots" / "accuracy_vs_iteration.png")
 
         test_n = min(cfg.test_examples, x_test.shape[0])
         y_true = np.zeros(test_n, dtype=np.int32)
