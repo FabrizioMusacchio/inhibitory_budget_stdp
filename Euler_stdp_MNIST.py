@@ -712,17 +712,25 @@ def plot_raster(spike_events: np.ndarray,
         return
     t = spike_events[:, 0]
     n = spike_events[:, 1]
+    n_events = int(spike_events.shape[0])
+    n_active = int(np.unique(n).size)
     
     # convert t into ms for plotting
     t_ms = t * cfg.dt_ms
     
     plt.figure(figsize=(10, 4))
-    plt.scatter(t_ms, n, s=1)
+    if n_events < 200:
+        point_size = 8
+    elif n_events < 2000:
+        point_size = 3
+    else:
+        point_size = 1
+    plt.scatter(t_ms, n, s=point_size)
     plt.xlabel("time (ms)")
     plt.ylabel("neuron id")
     plt.ylim(-1, cfg.n_e)
     plt.xlim(0, cfg.single_example_time_s * 1000.0)
-    plt.title(title)
+    plt.title(f"{title} | events={n_events}, active={n_active}")
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
@@ -762,7 +770,7 @@ def plot_weight_stats(stats: Dict[str, List[float]], out_png: Path) -> None:
     ax1 = plt.gca()
     color1 = 'tab:blue'
     color3 = 'tab:green'
-    ax1.plot(epochs, stats["l1"], marker="o", label="l1 mean per synapse", color=color1)
+    ax1.plot(epochs, stats["l1"], marker="o", label="mean L1 column sum", color=color1)
     ax1.plot(epochs, stats["l2"], marker="o", label="l2 rms per synapse", color=color3)
     ax1.set_xlabel("epoch")
     ax1.set_ylabel("l1/l2", color=color1)
@@ -789,7 +797,7 @@ def plot_weight_stats_iterations(stats: Dict[str, List[float]], out_png: Path) -
     ax1 = plt.gca()
     color1 = 'tab:blue'
     color3 = 'tab:green'
-    ax1.plot(iterations, stats["l1"], marker="o", label="l1 mean per synapse", color=color1)
+    ax1.plot(iterations, stats["l1"], marker="o", label="mean L1 column sum", color=color1)
     ax1.plot(iterations, stats["l2"], marker="o", label="l2 rms per synapse", color=color3)
     ax1.set_xlabel("iteration")
     ax1.set_ylabel("l1/l2", color=color1)
@@ -809,14 +817,16 @@ def plot_weight_stats_iterations(stats: Dict[str, List[float]], out_png: Path) -
     plt.close()
 
 
-def plot_accuracy_iterations(iterations: List[int], accuracies: List[float], out_png: Path) -> None:
-    it = np.asarray(iterations, dtype=np.int32)
+def plot_accuracy_over_epochs(accuracies: List[float], out_png: Path) -> None:
     acc = np.asarray(accuracies, dtype=np.float32)
-    if it.size == 0:
+    if acc.size == 0:
         return
+    epochs = np.arange(1, acc.size + 1, dtype=np.int32)
     plt.figure(figsize=(7, 4))
-    plt.plot(it, acc * 100.0, marker="o")
-    plt.xlabel("iteration")
+    plt.plot(epochs, acc * 100.0, marker="o")
+    if epochs.size == 1:
+        plt.xlim(0.5, 1.5)
+    plt.xlabel("epoch")
     plt.ylabel("accuracy (%)")
     plt.ylim(0.0, 100.0)
     plt.tight_layout()
@@ -825,7 +835,7 @@ def plot_accuracy_iterations(iterations: List[int], accuracies: List[float], out
 
 def weight_statistics(W: np.ndarray) -> Tuple[float, float, float]:
     mean = float(W.mean())
-    l1 = float(np.mean(np.abs(W)))
+    l1 = float(np.mean(np.sum(np.abs(W), axis=0)))
     l2 = float(np.sqrt(np.mean(W * W)))
     return mean, l1, l2
 
@@ -1047,18 +1057,15 @@ def main() -> None:
     normalize_columns_l1(trainer.W["XeAe"], target_sum=78.0)
     weight_stats_epoch = {"mean": [], "l1": [], "l2": []}
     weight_stats_iter = {"iteration": [], "mean": [], "l1": [], "l2": []}
-    train_acc_iterations: List[int] = []
-    train_acc_values: List[float] = []
+    test_accuracy_over_epochs: List[float] = []
 
     for ep in range(cfg.epochs):
         print(f"Epoch {ep+1}/{cfg.epochs}")
         train_n = min(cfg.train_examples, x_train.shape[0])
         result_monitor = np.zeros((train_n, cfg.n_e), dtype=np.int32)
         train_labels = np.zeros(train_n, dtype=np.int32)
-        train_pred = np.zeros(train_n, dtype=np.int32)
         train_sum_spk = np.zeros(train_n, dtype=np.int32)
         train_active = np.zeros(train_n, dtype=np.int32)
-        online_assignments = np.zeros(cfg.n_e, dtype=np.int32)
 
         input_intensity = cfg.input_intensity
         for k in range(train_n):
@@ -1090,7 +1097,6 @@ def main() -> None:
             train_labels[k] = label
             train_sum_spk[k] = sum_spk
             train_active[k] = int(np.count_nonzero(sc))
-            train_pred[k] = int(rank_digits(online_assignments, sc.astype(np.float32))[0])
 
             global_iter = ep * train_n + (k + 1)
             if cfg.weight_stats_every > 0 and ((k + 1) % cfg.weight_stats_every == 0):
@@ -1127,26 +1133,12 @@ def main() -> None:
                 w1 = k + 1
                 s = train_sum_spk[w0:w1]
                 a = train_active[w0:w1]
-                window_acc = float((train_pred[w0:w1] == train_labels[w0:w1]).mean())
-                train_acc_iterations.append(global_iter)
-                train_acc_values.append(window_acc)
-                online_assignments = compute_assignments(result_monitor[w0:w1], train_labels[w0:w1], cfg.n_e)
                 print(
                     f"  train window [{w0}:{w1}] mean_sum={s.mean():.2f} min_sum={s.min()} max_sum={s.max()} "
-                    f"mean_active={a.mean():.2f} acc={window_acc*100.0:.2f}%"
+                    f"mean_active={a.mean():.2f}"
                 )
 
             input_intensity = cfg.input_intensity
-
-        if cfg.update_interval > 0 and (train_n % cfg.update_interval) != 0:
-            w0 = (train_n // cfg.update_interval) * cfg.update_interval
-            w1 = train_n
-            if w1 > w0:
-                window_acc = float((train_pred[w0:w1] == train_labels[w0:w1]).mean())
-                train_acc_iterations.append(ep * train_n + w1)
-                train_acc_values.append(window_acc)
-                online_assignments = compute_assignments(result_monitor[w0:w1], train_labels[w0:w1], cfg.n_e)
-                print(f"  train window [{w0}:{w1}] acc={window_acc*100.0:.2f}%")
 
         if cfg.weight_stats_every > 0:
             last_iter = ep * train_n + train_n
@@ -1161,9 +1153,6 @@ def main() -> None:
         np.save(run_dir / "logs" / f"assignments_ep{ep}.npy", assignments)
         np.save(run_dir / "logs" / f"train_sum_spk_ep{ep}.npy", train_sum_spk)
         np.save(run_dir / "logs" / f"train_active_ep{ep}.npy", train_active)
-        np.save(run_dir / "logs" / f"train_pred_ep{ep}.npy", train_pred)
-        np.save(run_dir / "logs" / "train_accuracy_iterations.npy", np.asarray(train_acc_iterations, dtype=np.int32))
-        np.save(run_dir / "logs" / "train_accuracy_values.npy", np.asarray(train_acc_values, dtype=np.float32))
 
         m, l1, l2 = weight_statistics(trainer.W["XeAe"])
         weight_stats_epoch["mean"].append(m)
@@ -1174,7 +1163,6 @@ def main() -> None:
         plot_receptive_fields(trainer.W["XeAe"], cfg, run_dir / "plots" / f"rf_ep{ep}.png", f"receptive fields epoch {ep}")
         plot_weight_stats(weight_stats_epoch, run_dir / "plots" / "weight_stats.png")
         plot_weight_stats_iterations(weight_stats_iter, run_dir / "plots" / "weight_stats_iterations.png")
-        plot_accuracy_iterations(train_acc_iterations, train_acc_values, run_dir / "plots" / "accuracy_vs_iteration.png")
 
         test_n = min(cfg.test_examples, x_test.shape[0])
         y_true = np.zeros(test_n, dtype=np.int32)
@@ -1218,6 +1206,7 @@ def main() -> None:
                 )
 
         acc = float((y_true == y_pred).mean())
+        test_accuracy_over_epochs.append(acc)
         print(f"Epoch {ep} test accuracy: {acc:.4f}")
         print(
             f"Epoch {ep} train spikes mean={train_sum_spk.mean():.2f} min={train_sum_spk.min()} max={train_sum_spk.max()} "
@@ -1244,6 +1233,7 @@ def main() -> None:
             run_dir / "plots" / f"confusion_matrix_ep{ep}.png",
             f"confusion matrix epoch {ep}, acc={acc:.3f}"
         )
+        plot_accuracy_over_epochs(test_accuracy_over_epochs, run_dir / "plots" / "accuracy_over_epochs.png")
 
     print(f"Done. Outputs in {run_dir}")
 
