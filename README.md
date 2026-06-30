@@ -50,6 +50,7 @@ When an early-abort criterion is triggered, the run writes:
 - `--istdp-rule centered`
 - `--istdp-rule slow_homeostat`
 - `--istdp-rule theta_gated`
+- `--istdp-rule normalized_slow_homeostat`
 
 Useful rule-specific parameters:
 
@@ -57,6 +58,9 @@ Useful rule-specific parameters:
 --theta-gate-ref-mv 20.0
 --theta-gate-scale-mv 10.0
 --slow-homeostat-target-rate-hz 0.1
+--normalize-aiae-columns
+--aiae-target-sum 7980
+--aiae-normalize-every 1
 ```
 
 ## Reproducible iSTDP Runs

@@ -150,7 +150,7 @@ class SimConfig:
 
     # Inhibitory plasticity (Ai->Ae)
     inhibition_mode: str = "fixed"  # "fixed" or "istdp"
-    istdp_rule: str = "vogels"  # "vogels", "centered", "slow_homeostat", "theta_gated"
+    istdp_rule: str = "vogels"  # "vogels", "centered", "slow_homeostat", "theta_gated", "normalized_slow_homeostat"
     i_trace_tau_ms: float = 20.0
     e_trace_tau_ms: float = 20.0
     eta_ie: float = 0.001
@@ -160,6 +160,9 @@ class SimConfig:
     theta_gate_ref_mV: float = 20.0
     theta_gate_scale_mV: float = 10.0
     slow_homeostat_target_rate_hz: float = 0.1
+    normalize_aiae_columns: bool = False
+    aiae_target_sum: float = 7980.0  # 20.0 * (n_i - 1) for the default n_i=400
+    aiae_normalize_every: int = 1
 
     # Delays
     max_delay_ms: float = 10.0
@@ -268,6 +271,28 @@ def normalize_columns_l1(W: np.ndarray, target_sum: float) -> None:
     col_sums[col_sums == 0] = 1.0
     factors = target_sum / col_sums
     W *= factors[np.newaxis, :]
+
+
+def normalize_aiae_columns_l1(W: np.ndarray, target_sum: float, enforce_zero_diag: bool) -> None:
+    if target_sum <= 0.0:
+        return
+    if enforce_zero_diag and W.shape[0] == W.shape[1]:
+        diag_idx = np.arange(W.shape[0], dtype=np.int32)
+        W[diag_idx, diag_idx] = 0.0
+        col_sums = W.sum(axis=0)
+        zero_cols = col_sums == 0.0
+        if np.any(zero_cols):
+            zero_idx = np.where(zero_cols)[0]
+            for j in zero_idx:
+                W[:, j] = 1.0
+                W[j, j] = 0.0
+            col_sums = W.sum(axis=0)
+        col_sums[col_sums == 0.0] = 1.0
+        W *= (target_sum / col_sums)[np.newaxis, :]
+        W[diag_idx, diag_idx] = 0.0
+        return
+
+    normalize_columns_l1(W, target_sum=target_sum)
 
 
 # =========================
@@ -703,8 +728,11 @@ class DiehlCookEuler:
         self.alpha_e_trace = math.exp(-cfg.dt_ms / cfg.e_trace_tau_ms)
         self.use_istdp = (cfg.inhibition_mode == "istdp")
         self.istdp_rule = cfg.istdp_rule
+        self.normalize_aiae_columns = cfg.normalize_aiae_columns or (self.istdp_rule == "normalized_slow_homeostat")
         self.enforce_ie_zero_diag = (cfg.n_i == cfg.n_e)
-        if self.use_istdp and self.istdp_rule not in {"vogels", "centered", "slow_homeostat", "theta_gated"}:
+        if self.use_istdp and self.istdp_rule not in {
+            "vogels", "centered", "slow_homeostat", "theta_gated", "normalized_slow_homeostat"
+        }:
             raise ValueError(f"Unsupported iSTDP rule: {self.istdp_rule}")
 
         # weights
@@ -840,7 +868,9 @@ class DiehlCookEuler:
         mean_gi_e_sum = 0.0
         mean_gi_e_steps = 0
         istdp_active = training and self.use_istdp
-        use_spike_based_istdp = istdp_active and self.istdp_rule != "slow_homeostat"
+        use_spike_based_istdp = istdp_active and self.istdp_rule not in {
+            "slow_homeostat", "normalized_slow_homeostat"
+        }
         istdp_active_rest = use_spike_based_istdp and cfg.istdp_during_rest
 
         for t in range(self.steps_example):
@@ -969,7 +999,7 @@ class DiehlCookEuler:
             if record_v and v_trace_subset is not None:
                 v_trace_subset[t, :] = self.v_e[v_subset_idx]
 
-        if istdp_active and self.istdp_rule == "slow_homeostat":
+        if istdp_active and self.istdp_rule in {"slow_homeostat", "normalized_slow_homeostat"}:
             _slow_ie_homeostat_update(
                 self.W["AiAe"], i_spike_count, e_spike_count,
                 cfg.single_example_time_s, cfg.slow_homeostat_target_rate_hz,
@@ -1322,6 +1352,9 @@ def write_abort_notes(
         f"- theta_gate_ref_mV: `{cfg.theta_gate_ref_mV}`",
         f"- theta_gate_scale_mV: `{cfg.theta_gate_scale_mV}`",
         f"- slow_homeostat_target_rate_hz: `{cfg.slow_homeostat_target_rate_hz}`",
+        f"- normalize_aiae_columns: `{cfg.normalize_aiae_columns}`",
+        f"- aiae_target_sum: `{cfg.aiae_target_sum}`",
+        f"- aiae_normalize_every: `{cfg.aiae_normalize_every}`",
         f"- istdp_during_rest: `{cfg.istdp_during_rest}`",
         f"- rollback_state_on_retry: `{cfg.rollback_state_on_retry}`",
         "",
@@ -1558,7 +1591,7 @@ def _build_cfg_from_cli() -> SimConfig:
     parser.add_argument("--inhibition-mode", choices=["fixed", "istdp"], default=None)
     parser.add_argument(
         "--istdp-rule",
-        choices=["vogels", "centered", "slow_homeostat", "theta_gated"],
+        choices=["vogels", "centered", "slow_homeostat", "theta_gated", "normalized_slow_homeostat"],
         default=None,
     )
     parser.add_argument("--i-trace-tau-ms", type=float, default=None)
@@ -1570,6 +1603,10 @@ def _build_cfg_from_cli() -> SimConfig:
     parser.add_argument("--theta-gate-ref-mv", type=float, default=None)
     parser.add_argument("--theta-gate-scale-mv", type=float, default=None)
     parser.add_argument("--slow-homeostat-target-rate-hz", type=float, default=None)
+    parser.add_argument("--normalize-aiae-columns", action="store_true")
+    parser.add_argument("--no-normalize-aiae-columns", action="store_true")
+    parser.add_argument("--aiae-target-sum", type=float, default=None)
+    parser.add_argument("--aiae-normalize-every", type=int, default=None)
     parser.add_argument("--metrics-window", type=int, default=None)
     parser.add_argument("--istdp-during-rest", action="store_true")
     parser.add_argument("--no-istdp-during-rest", action="store_true")
@@ -1642,6 +1679,14 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.theta_gate_scale_mV = args.theta_gate_scale_mv
     if args.slow_homeostat_target_rate_hz is not None:
         cfg.slow_homeostat_target_rate_hz = args.slow_homeostat_target_rate_hz
+    if args.normalize_aiae_columns:
+        cfg.normalize_aiae_columns = True
+    if args.no_normalize_aiae_columns:
+        cfg.normalize_aiae_columns = False
+    if args.aiae_target_sum is not None:
+        cfg.aiae_target_sum = args.aiae_target_sum
+    if args.aiae_normalize_every is not None:
+        cfg.aiae_normalize_every = args.aiae_normalize_every
     if args.metrics_window is not None:
         cfg.metrics_window = args.metrics_window
     if args.istdp_during_rest:
@@ -1676,6 +1721,8 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.test_hard_reset_state = True
     if args.allow_synthetic_data:
         cfg.allow_synthetic_data = True
+    if cfg.istdp_rule == "normalized_slow_homeostat":
+        cfg.normalize_aiae_columns = True
     return cfg
 
 
@@ -1844,6 +1891,11 @@ def main() -> None:
                 train_input_factor[k] = float(current_input_intensity / cfg.input_intensity)
             train_block_idx[k] = block_idx
             processed_train_n = k + 1
+
+            if trainer.normalize_aiae_columns and (processed_train_n % max(1, cfg.aiae_normalize_every) == 0):
+                normalize_aiae_columns_l1(
+                    trainer.W["AiAe"], cfg.aiae_target_sum, trainer.enforce_ie_zero_diag
+                )
 
             last_theta_mean = float(trainer.theta.mean())
             last_theta_max = float(trainer.theta.max())
@@ -2294,6 +2346,9 @@ def main() -> None:
             "collapse_detected": bool(collapse_detected),
             "istdp_during_rest": bool(cfg.istdp_during_rest),
             "rollback_state_on_retry": bool(cfg.rollback_state_on_retry),
+            "normalize_aiae_columns": bool(trainer.normalize_aiae_columns),
+            "aiae_target_sum": float(cfg.aiae_target_sum),
+            "aiae_normalize_every": int(cfg.aiae_normalize_every),
         }
         metrics.update({f"train_{k}": v for k, v in train_activity_metrics.items()})
         metrics.update({f"test_{k}": v for k, v in test_activity_metrics.items()})
@@ -2343,6 +2398,9 @@ def main() -> None:
             "initial_aiae_max_fraction": initial_ai_ae_max_fraction,
             "istdp_during_rest": bool(cfg.istdp_during_rest),
             "rollback_state_on_retry": bool(cfg.rollback_state_on_retry),
+            "normalize_aiae_columns": bool(trainer.normalize_aiae_columns),
+            "aiae_target_sum": float(cfg.aiae_target_sum),
+            "aiae_normalize_every": int(cfg.aiae_normalize_every),
             "metrics_window": int(cfg.metrics_window),
             "train_examples_requested": int(cfg.train_examples),
             "test_examples_requested": int(cfg.test_examples),
