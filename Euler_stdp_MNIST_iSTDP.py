@@ -1,4 +1,4 @@
-""" 
+r"""
 
 Installation
 -------------
@@ -43,6 +43,7 @@ or different configurations.
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
 import math
 import json
@@ -149,12 +150,16 @@ class SimConfig:
 
     # Inhibitory plasticity (Ai->Ae)
     inhibition_mode: str = "fixed"  # "fixed" or "istdp"
+    istdp_rule: str = "vogels"  # "vogels", "centered", "slow_homeostat", "theta_gated"
     i_trace_tau_ms: float = 20.0
     e_trace_tau_ms: float = 20.0
     eta_ie: float = 0.001
     rho_ie: float = 0.1
     w_ie_min: float = 0.0
     w_ie_max: float = 40.0
+    theta_gate_ref_mV: float = 20.0
+    theta_gate_scale_mV: float = 10.0
+    slow_homeostat_target_rate_hz: float = 0.1
 
     # Delays
     max_delay_ms: float = 10.0
@@ -174,6 +179,12 @@ class SimConfig:
     use_input_intensity_protocol: bool = False
     input_intensity_factors: str = "0.5,1.0,2.0,4.0,1.0"
     max_spike_retries_per_example: int = 25
+    istdp_during_rest: bool = False
+    rollback_state_on_retry: bool = True
+    abort_runaway_spike_threshold: int = 5000
+    abort_runaway_consecutive_examples: int = 20
+    abort_theta_mean_threshold: float = 200.0
+    abort_aiae_max_fraction_threshold: float = 0.2
 
     # Data loading
     mnist_data_dir: str = "."
@@ -461,6 +472,74 @@ def _istdp_pre_update(
 
 
 @njit(cache=True)
+def _istdp_pre_update_centered(
+    W: np.ndarray,
+    pre_idx: np.ndarray,
+    e_post_trace: np.ndarray,
+    eta_ie: float,
+    rho_ie: float,
+    wmin: float,
+    wmax: float,
+    enforce_zero_diag: bool
+) -> None:
+    n_e = W.shape[1]
+    mean_post_trace = float(e_post_trace.mean())
+    for kk in range(pre_idx.shape[0]):
+        i = pre_idx[kk]
+        for j in range(n_e):
+            if enforce_zero_diag and i == j:
+                W[i, j] = 0.0
+                continue
+            centered_post = e_post_trace[j] - mean_post_trace
+            w = W[i, j] + (eta_ie * (centered_post - rho_ie))
+            if w < wmin:
+                w = wmin
+            elif w > wmax:
+                w = wmax
+            W[i, j] = w
+
+
+@njit(cache=True)
+def _theta_gate_value(theta_value: float, theta_ref: float, theta_scale: float) -> float:
+    if theta_scale <= 0.0:
+        return 1.0
+    delta = theta_value - theta_ref
+    if delta <= 0.0:
+        return 1.0
+    return math.exp(-delta / theta_scale)
+
+
+@njit(cache=True)
+def _istdp_pre_update_theta_gated(
+    W: np.ndarray,
+    pre_idx: np.ndarray,
+    e_post_trace: np.ndarray,
+    theta: np.ndarray,
+    eta_ie: float,
+    rho_ie: float,
+    theta_gate_ref_mV: float,
+    theta_gate_scale_mV: float,
+    wmin: float,
+    wmax: float,
+    enforce_zero_diag: bool
+) -> None:
+    n_e = W.shape[1]
+    for kk in range(pre_idx.shape[0]):
+        i = pre_idx[kk]
+        for j in range(n_e):
+            if enforce_zero_diag and i == j:
+                W[i, j] = 0.0
+                continue
+            gate = _theta_gate_value(theta[j], theta_gate_ref_mV, theta_gate_scale_mV)
+            w = W[i, j] + (eta_ie * (e_post_trace[j] - rho_ie) * gate)
+            if w < wmin:
+                w = wmin
+            elif w > wmax:
+                w = wmax
+            W[i, j] = w
+
+
+@njit(cache=True)
 def _istdp_post_update(
     W: np.ndarray,
     post_idx: np.ndarray,
@@ -478,6 +557,69 @@ def _istdp_post_update(
                 W[i, j] = 0.0
                 continue
             w = W[i, j] + (eta_ie * i_pre_trace[i])
+            if w < wmin:
+                w = wmin
+            elif w > wmax:
+                w = wmax
+            W[i, j] = w
+
+
+@njit(cache=True)
+def _istdp_post_update_theta_gated(
+    W: np.ndarray,
+    post_idx: np.ndarray,
+    i_pre_trace: np.ndarray,
+    theta: np.ndarray,
+    eta_ie: float,
+    theta_gate_ref_mV: float,
+    theta_gate_scale_mV: float,
+    wmin: float,
+    wmax: float,
+    enforce_zero_diag: bool
+) -> None:
+    n_i = W.shape[0]
+    for kk in range(post_idx.shape[0]):
+        j = post_idx[kk]
+        gate = _theta_gate_value(theta[j], theta_gate_ref_mV, theta_gate_scale_mV)
+        for i in range(n_i):
+            if enforce_zero_diag and i == j:
+                W[i, j] = 0.0
+                continue
+            w = W[i, j] + (eta_ie * i_pre_trace[i] * gate)
+            if w < wmin:
+                w = wmin
+            elif w > wmax:
+                w = wmax
+            W[i, j] = w
+
+
+@njit(cache=True)
+def _slow_ie_homeostat_update(
+    W: np.ndarray,
+    i_spike_count: np.ndarray,
+    e_spike_count: np.ndarray,
+    single_example_time_s: float,
+    target_rate_hz: float,
+    eta_ie: float,
+    wmin: float,
+    wmax: float,
+    enforce_zero_diag: bool
+) -> None:
+    n_i = W.shape[0]
+    n_e = W.shape[1]
+    inv_duration = 1.0 / max(single_example_time_s, 1e-9)
+    for i in range(n_i):
+        pre_drive = float(i_spike_count[i])
+        if pre_drive <= 0.0:
+            if enforce_zero_diag and i < n_e:
+                W[i, i] = 0.0
+            continue
+        for j in range(n_e):
+            if enforce_zero_diag and i == j:
+                W[i, j] = 0.0
+                continue
+            post_rate_hz = float(e_spike_count[j]) * inv_duration
+            w = W[i, j] + (eta_ie * pre_drive * (post_rate_hz - target_rate_hz))
             if w < wmin:
                 w = wmin
             elif w > wmax:
@@ -560,7 +702,10 @@ class DiehlCookEuler:
         self.alpha_i_trace = math.exp(-cfg.dt_ms / cfg.i_trace_tau_ms)
         self.alpha_e_trace = math.exp(-cfg.dt_ms / cfg.e_trace_tau_ms)
         self.use_istdp = (cfg.inhibition_mode == "istdp")
+        self.istdp_rule = cfg.istdp_rule
         self.enforce_ie_zero_diag = (cfg.n_i == cfg.n_e)
+        if self.use_istdp and self.istdp_rule not in {"vogels", "centered", "slow_homeostat", "theta_gated"}:
+            raise ValueError(f"Unsupported iSTDP rule: {self.istdp_rule}")
 
         # weights
         self.W = init_weights(cfg, self.rng)
@@ -597,6 +742,50 @@ class DiehlCookEuler:
         self.e_post_trace.fill(0.0)
         self.delay_buf.fill(0)
         self.delay_ptr = 0
+
+    def snapshot_retry_state(self) -> Dict[str, Any]:
+        return {
+            "v_e": self.v_e.copy(),
+            "v_i": self.v_i.copy(),
+            "ge_e": self.ge_e.copy(),
+            "gi_e": self.gi_e.copy(),
+            "ge_i": self.ge_i.copy(),
+            "gi_i": self.gi_i.copy(),
+            "theta": self.theta.copy(),
+            "refrac_e": self.refrac_e.copy(),
+            "refrac_i": self.refrac_i.copy(),
+            "pre_trace": self.pre_trace.copy(),
+            "post1": self.post1.copy(),
+            "post2": self.post2.copy(),
+            "i_pre_trace": self.i_pre_trace.copy(),
+            "e_post_trace": self.e_post_trace.copy(),
+            "delay_buf": self.delay_buf.copy(),
+            "delay_ptr": int(self.delay_ptr),
+            "W_XeAe": self.W["XeAe"].copy(),
+            "W_AiAe": self.W["AiAe"].copy(),
+            "rng_state": copy.deepcopy(self.rng.bit_generator.state),
+        }
+
+    def restore_retry_state(self, snapshot: Dict[str, Any]) -> None:
+        self.v_e[:] = snapshot["v_e"]
+        self.v_i[:] = snapshot["v_i"]
+        self.ge_e[:] = snapshot["ge_e"]
+        self.gi_e[:] = snapshot["gi_e"]
+        self.ge_i[:] = snapshot["ge_i"]
+        self.gi_i[:] = snapshot["gi_i"]
+        self.theta[:] = snapshot["theta"]
+        self.refrac_e[:] = snapshot["refrac_e"]
+        self.refrac_i[:] = snapshot["refrac_i"]
+        self.pre_trace[:] = snapshot["pre_trace"]
+        self.post1[:] = snapshot["post1"]
+        self.post2[:] = snapshot["post2"]
+        self.i_pre_trace[:] = snapshot["i_pre_trace"]
+        self.e_post_trace[:] = snapshot["e_post_trace"]
+        self.delay_buf[:] = snapshot["delay_buf"]
+        self.delay_ptr = int(snapshot["delay_ptr"])
+        self.W["XeAe"][:] = snapshot["W_XeAe"]
+        self.W["AiAe"][:] = snapshot["W_AiAe"]
+        self.rng.bit_generator.state = copy.deepcopy(snapshot["rng_state"])
 
     def _delay_push(self, x_spk: np.ndarray) -> None:
         self.delay_buf[self.delay_ptr, :] = x_spk
@@ -647,9 +836,12 @@ class DiehlCookEuler:
             v_trace_subset = np.zeros((self.steps_example, v_subset_idx.size), dtype=np.float32)
 
         e_spike_count = np.zeros(cfg.n_e, dtype=np.int32)
+        i_spike_count = np.zeros(cfg.n_i, dtype=np.int32)
         mean_gi_e_sum = 0.0
         mean_gi_e_steps = 0
         istdp_active = training and self.use_istdp
+        use_spike_based_istdp = istdp_active and self.istdp_rule != "slow_homeostat"
+        istdp_active_rest = use_spike_based_istdp and cfg.istdp_during_rest
 
         for t in range(self.steps_example):
             # input poisson
@@ -706,12 +898,19 @@ class DiehlCookEuler:
                     self.W["XeAe"], post_idx, self.pre_trace, self.post2,
                     cfg.nu_post, cfg.wmin, cfg.wmax
                 )
-            if istdp_active and post_idx.size > 0:
-                _istdp_post_update(
-                    self.W["AiAe"], post_idx, self.i_pre_trace,
-                    cfg.eta_ie, cfg.w_ie_min, cfg.w_ie_max,
-                    self.enforce_ie_zero_diag
-                )
+            if use_spike_based_istdp and post_idx.size > 0:
+                if self.istdp_rule == "theta_gated":
+                    _istdp_post_update_theta_gated(
+                        self.W["AiAe"], post_idx, self.i_pre_trace, self.theta,
+                        cfg.eta_ie, cfg.theta_gate_ref_mV, cfg.theta_gate_scale_mV,
+                        cfg.w_ie_min, cfg.w_ie_max, self.enforce_ie_zero_diag
+                    )
+                else:
+                    _istdp_post_update(
+                        self.W["AiAe"], post_idx, self.i_pre_trace,
+                        cfg.eta_ie, cfg.w_ie_min, cfg.w_ie_max,
+                        self.enforce_ie_zero_diag
+                    )
             for j in post_idx:
                 self.post1[j] = 1.0
                 self.post2[j] = 1.0
@@ -737,13 +936,27 @@ class DiehlCookEuler:
             i_idx = np.where(i_spk > 0)[0].astype(np.int32)
             for j in i_idx:
                 self.refrac_i[j] = self.refrac_i_steps
+                i_spike_count[j] += 1
 
-            if istdp_active and i_idx.size > 0:
-                _istdp_pre_update(
-                    self.W["AiAe"], i_idx, self.e_post_trace,
-                    cfg.eta_ie, cfg.rho_ie, cfg.w_ie_min, cfg.w_ie_max,
-                    self.enforce_ie_zero_diag
-                )
+            if use_spike_based_istdp and i_idx.size > 0:
+                if self.istdp_rule == "centered":
+                    _istdp_pre_update_centered(
+                        self.W["AiAe"], i_idx, self.e_post_trace,
+                        cfg.eta_ie, cfg.rho_ie, cfg.w_ie_min, cfg.w_ie_max,
+                        self.enforce_ie_zero_diag
+                    )
+                elif self.istdp_rule == "theta_gated":
+                    _istdp_pre_update_theta_gated(
+                        self.W["AiAe"], i_idx, self.e_post_trace, self.theta,
+                        cfg.eta_ie, cfg.rho_ie, cfg.theta_gate_ref_mV, cfg.theta_gate_scale_mV,
+                        cfg.w_ie_min, cfg.w_ie_max, self.enforce_ie_zero_diag
+                    )
+                else:
+                    _istdp_pre_update(
+                        self.W["AiAe"], i_idx, self.e_post_trace,
+                        cfg.eta_ie, cfg.rho_ie, cfg.w_ie_min, cfg.w_ie_max,
+                        self.enforce_ie_zero_diag
+                    )
             # propagate I->E as inhibition (gi)
             if i_idx.size > 0:
                 _propagate_sparse(i_idx, self.W["AiAe"], self.gi_e)
@@ -755,6 +968,13 @@ class DiehlCookEuler:
 
             if record_v and v_trace_subset is not None:
                 v_trace_subset[t, :] = self.v_e[v_subset_idx]
+
+        if istdp_active and self.istdp_rule == "slow_homeostat":
+            _slow_ie_homeostat_update(
+                self.W["AiAe"], i_spike_count, e_spike_count,
+                cfg.single_example_time_s, cfg.slow_homeostat_target_rate_hz,
+                cfg.eta_ie, cfg.w_ie_min, cfg.w_ie_max, self.enforce_ie_zero_diag
+            )
 
         # rest period, no input
         for _ in range(self.steps_rest):
@@ -773,12 +993,19 @@ class DiehlCookEuler:
             e_idx = np.where(e_spk > 0)[0].astype(np.int32)
             for j in e_idx:
                 self.refrac_e[j] = self.refrac_e_steps
-            if istdp_active and e_idx.size > 0:
-                _istdp_post_update(
-                    self.W["AiAe"], e_idx, self.i_pre_trace,
-                    cfg.eta_ie, cfg.w_ie_min, cfg.w_ie_max,
-                    self.enforce_ie_zero_diag
-                )
+            if istdp_active_rest and e_idx.size > 0:
+                if self.istdp_rule == "theta_gated":
+                    _istdp_post_update_theta_gated(
+                        self.W["AiAe"], e_idx, self.i_pre_trace, self.theta,
+                        cfg.eta_ie, cfg.theta_gate_ref_mV, cfg.theta_gate_scale_mV,
+                        cfg.w_ie_min, cfg.w_ie_max, self.enforce_ie_zero_diag
+                    )
+                else:
+                    _istdp_post_update(
+                        self.W["AiAe"], e_idx, self.i_pre_trace,
+                        cfg.eta_ie, cfg.w_ie_min, cfg.w_ie_max,
+                        self.enforce_ie_zero_diag
+                    )
                 for j in e_idx:
                     self.e_post_trace[j] = 1.0
             if training:
@@ -796,12 +1023,25 @@ class DiehlCookEuler:
             i_idx = np.where(i_spk > 0)[0].astype(np.int32)
             for j in i_idx:
                 self.refrac_i[j] = self.refrac_i_steps
-            if istdp_active and i_idx.size > 0:
-                _istdp_pre_update(
-                    self.W["AiAe"], i_idx, self.e_post_trace,
-                    cfg.eta_ie, cfg.rho_ie, cfg.w_ie_min, cfg.w_ie_max,
-                    self.enforce_ie_zero_diag
-                )
+            if istdp_active_rest and i_idx.size > 0:
+                if self.istdp_rule == "centered":
+                    _istdp_pre_update_centered(
+                        self.W["AiAe"], i_idx, self.e_post_trace,
+                        cfg.eta_ie, cfg.rho_ie, cfg.w_ie_min, cfg.w_ie_max,
+                        self.enforce_ie_zero_diag
+                    )
+                elif self.istdp_rule == "theta_gated":
+                    _istdp_pre_update_theta_gated(
+                        self.W["AiAe"], i_idx, self.e_post_trace, self.theta,
+                        cfg.eta_ie, cfg.rho_ie, cfg.theta_gate_ref_mV, cfg.theta_gate_scale_mV,
+                        cfg.w_ie_min, cfg.w_ie_max, self.enforce_ie_zero_diag
+                    )
+                else:
+                    _istdp_pre_update(
+                        self.W["AiAe"], i_idx, self.e_post_trace,
+                        cfg.eta_ie, cfg.rho_ie, cfg.w_ie_min, cfg.w_ie_max,
+                        self.enforce_ie_zero_diag
+                    )
             if i_idx.size > 0:
                 _propagate_sparse(i_idx, self.W["AiAe"], self.gi_e)
                 for i in i_idx:
@@ -813,6 +1053,7 @@ class DiehlCookEuler:
         return {
             "label": int(label),
             "spike_count_e": e_spike_count.astype(np.int32),
+            "spike_count_i": i_spike_count.astype(np.int32),
             "spike_events_e": np.array(spike_events_e, dtype=np.int32) if record_spikes else None,
             "v_trace_subset": v_trace_subset,
             "mean_gi_e": float(mean_gi_e_sum / max(1, mean_gi_e_steps)),
@@ -1035,6 +1276,78 @@ def ai_ae_weight_statistics(W: np.ndarray) -> Dict[str, float]:
         "std": float(W.std()),
     }
 
+def ai_ae_max_fraction(W: np.ndarray, wmax: float, enforce_zero_diag: bool) -> float:
+    mask = np.ones(W.shape, dtype=bool)
+    if enforce_zero_diag and W.shape[0] == W.shape[1]:
+        np.fill_diagonal(mask, False)
+    denom = int(np.count_nonzero(mask))
+    if denom == 0:
+        return 0.0
+    num = int(np.count_nonzero(np.logical_and(mask, W >= (wmax - 1e-6))))
+    return float(num / denom)
+
+def write_abort_notes(
+    run_dir: Path,
+    cfg: SimConfig,
+    abort_info: Dict[str, Any],
+    summary: Dict[str, Any]
+) -> None:
+    lines = [
+        "# Aborted Run Notes",
+        "",
+        "## Reason",
+        "",
+        f"- reason: `{abort_info.get('reason', 'unknown')}`",
+        f"- phase: `{abort_info.get('phase', 'unknown')}`",
+        f"- epoch: `{abort_info.get('epoch', 'unknown')}`",
+        f"- example_index: `{abort_info.get('example_index', 'unknown')}`",
+        f"- global_iteration: `{abort_info.get('global_iteration', 'unknown')}`",
+        "",
+        "## Trigger Values",
+        "",
+        f"- sum_spk: `{abort_info.get('sum_spk', 'unknown')}`",
+        f"- theta_mean: `{abort_info.get('theta_mean', 'unknown')}`",
+        f"- theta_max: `{abort_info.get('theta_max', 'unknown')}`",
+        f"- ai_ae_max: `{abort_info.get('ai_ae_max', 'unknown')}`",
+        f"- ai_ae_max_fraction: `{abort_info.get('ai_ae_max_fraction', 'unknown')}`",
+        f"- gi_mean: `{abort_info.get('mean_gi_e', 'unknown')}`",
+        "",
+        "## Config",
+        "",
+        f"- inhibition_mode: `{cfg.inhibition_mode}`",
+        f"- istdp_rule: `{cfg.istdp_rule}`",
+        f"- eta_ie: `{cfg.eta_ie}`",
+        f"- rho_ie: `{cfg.rho_ie}`",
+        f"- w_ie_max: `{cfg.w_ie_max}`",
+        f"- theta_gate_ref_mV: `{cfg.theta_gate_ref_mV}`",
+        f"- theta_gate_scale_mV: `{cfg.theta_gate_scale_mV}`",
+        f"- slow_homeostat_target_rate_hz: `{cfg.slow_homeostat_target_rate_hz}`",
+        f"- istdp_during_rest: `{cfg.istdp_during_rest}`",
+        f"- rollback_state_on_retry: `{cfg.rollback_state_on_retry}`",
+        "",
+        "## Summary",
+        "",
+        f"- aborted: `{summary.get('aborted')}`",
+        f"- train_mean_spikes: `{summary.get('train_mean_spikes')}`",
+        f"- train_usage_entropy_norm: `{summary.get('train_usage_entropy_norm')}`",
+        f"- dead_fraction: `{summary.get('dead_fraction')}`",
+        f"- firing_rate_cv: `{summary.get('firing_rate_cv')}`",
+        f"- gi_mean: `{summary.get('gi_mean')}`",
+        f"- ai_ae_mean: `{summary.get('ai_ae_mean')}`",
+        f"- ai_ae_max: `{summary.get('ai_ae_max')}`",
+        f"- theta_mean: `{summary.get('theta_mean')}`",
+        f"- theta_max: `{summary.get('theta_max')}`",
+        f"- retry_cap_hits: `{summary.get('retry_cap_hits')}`",
+        f"- runaway_detected: `{summary.get('runaway_detected')}`",
+        f"- collapse_detected: `{summary.get('collapse_detected')}`",
+    ]
+    with open(run_dir / "ABORTED_RUN_NOTES.md", "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+def write_run_summary(run_dir: Path, summary: Dict[str, Any]) -> None:
+    with open(run_dir / "logs" / "run_summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
 def _parse_intensity_factors(spec: str) -> np.ndarray:
     values: List[float] = []
     for part in spec.split(","):
@@ -1243,13 +1556,29 @@ def _build_cfg_from_cli() -> SimConfig:
     parser.add_argument("--w-aeai", type=float, default=None)
     parser.add_argument("--w-aiae", type=float, default=None)
     parser.add_argument("--inhibition-mode", choices=["fixed", "istdp"], default=None)
+    parser.add_argument(
+        "--istdp-rule",
+        choices=["vogels", "centered", "slow_homeostat", "theta_gated"],
+        default=None,
+    )
     parser.add_argument("--i-trace-tau-ms", type=float, default=None)
     parser.add_argument("--e-trace-tau-ms", type=float, default=None)
     parser.add_argument("--eta-ie", type=float, default=None)
     parser.add_argument("--rho-ie", type=float, default=None)
     parser.add_argument("--w-ie-min", type=float, default=None)
     parser.add_argument("--w-ie-max", type=float, default=None)
+    parser.add_argument("--theta-gate-ref-mv", type=float, default=None)
+    parser.add_argument("--theta-gate-scale-mv", type=float, default=None)
+    parser.add_argument("--slow-homeostat-target-rate-hz", type=float, default=None)
     parser.add_argument("--metrics-window", type=int, default=None)
+    parser.add_argument("--istdp-during-rest", action="store_true")
+    parser.add_argument("--no-istdp-during-rest", action="store_true")
+    parser.add_argument("--rollback-state-on-retry", action="store_true")
+    parser.add_argument("--no-rollback-state-on-retry", action="store_true")
+    parser.add_argument("--abort-runaway-spike-threshold", type=int, default=None)
+    parser.add_argument("--abort-runaway-consecutive-examples", type=int, default=None)
+    parser.add_argument("--abort-theta-mean-threshold", type=float, default=None)
+    parser.add_argument("--abort-aiae-max-fraction-threshold", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--use-xeai-input", action="store_true")
     parser.add_argument("--no-delays", action="store_true")
@@ -1293,6 +1622,8 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.w_aiae = args.w_aiae
     if args.inhibition_mode is not None:
         cfg.inhibition_mode = args.inhibition_mode
+    if args.istdp_rule is not None:
+        cfg.istdp_rule = args.istdp_rule
     if args.i_trace_tau_ms is not None:
         cfg.i_trace_tau_ms = args.i_trace_tau_ms
     if args.e_trace_tau_ms is not None:
@@ -1305,8 +1636,30 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.w_ie_min = args.w_ie_min
     if args.w_ie_max is not None:
         cfg.w_ie_max = args.w_ie_max
+    if args.theta_gate_ref_mv is not None:
+        cfg.theta_gate_ref_mV = args.theta_gate_ref_mv
+    if args.theta_gate_scale_mv is not None:
+        cfg.theta_gate_scale_mV = args.theta_gate_scale_mv
+    if args.slow_homeostat_target_rate_hz is not None:
+        cfg.slow_homeostat_target_rate_hz = args.slow_homeostat_target_rate_hz
     if args.metrics_window is not None:
         cfg.metrics_window = args.metrics_window
+    if args.istdp_during_rest:
+        cfg.istdp_during_rest = True
+    if args.no_istdp_during_rest:
+        cfg.istdp_during_rest = False
+    if args.rollback_state_on_retry:
+        cfg.rollback_state_on_retry = True
+    if args.no_rollback_state_on_retry:
+        cfg.rollback_state_on_retry = False
+    if args.abort_runaway_spike_threshold is not None:
+        cfg.abort_runaway_spike_threshold = args.abort_runaway_spike_threshold
+    if args.abort_runaway_consecutive_examples is not None:
+        cfg.abort_runaway_consecutive_examples = args.abort_runaway_consecutive_examples
+    if args.abort_theta_mean_threshold is not None:
+        cfg.abort_theta_mean_threshold = args.abort_theta_mean_threshold
+    if args.abort_aiae_max_fraction_threshold is not None:
+        cfg.abort_aiae_max_fraction_threshold = args.abort_aiae_max_fraction_threshold
     if args.seed is not None:
         cfg.seed = args.seed
     if args.use_xeai_input:
@@ -1401,6 +1754,7 @@ def main() -> None:
     ie_weight_stats_iter = {"iteration": [], "mean": [], "min": [], "max": [], "std": []}
     test_accuracy_over_epochs: List[float] = []
     all_train_window_records: List[Dict[str, Any]] = []
+    final_run_summary: Dict[str, Any] = {}
 
     for ep in range(cfg.epochs):
         print(f"Epoch {ep+1}/{cfg.epochs}")
@@ -1415,6 +1769,19 @@ def main() -> None:
         train_block_idx = np.zeros(train_n, dtype=np.int32)
         train_window_records: List[Dict[str, Any]] = []
         window_start = 0
+        processed_train_n = 0
+        abort_info: Optional[Dict[str, Any]] = None
+        consecutive_runaway_examples = 0
+        retry_cap_hits = 0
+        runaway_detected = False
+        collapse_detected = False
+        last_theta_mean = float(trainer.theta.mean())
+        last_theta_max = float(trainer.theta.max())
+        last_ai_ae_stats = ai_ae_weight_statistics(trainer.W["AiAe"])
+        last_ai_ae_max_fraction = ai_ae_max_fraction(
+            trainer.W["AiAe"], cfg.w_ie_max, trainer.enforce_ie_zero_diag
+        )
+        initial_ai_ae_max_fraction = last_ai_ae_max_fraction
 
         for k in range(train_n):
             if cfg.train_hard_reset_state:
@@ -1426,8 +1793,10 @@ def main() -> None:
             )
             retries = 0
             current_input_intensity = scheduled_intensity
+            retry_cap_hit = False
             while True:
                 normalize_columns_l1(trainer.W["XeAe"], target_sum=78.0)
+                retry_snapshot = trainer.snapshot_retry_state() if cfg.rollback_state_on_retry else None
                 rec_v = (cfg.record_v_example_every > 0 and (k % cfg.record_v_example_every == 0))
                 out = trainer.run_one_example(
                     img=img,
@@ -1441,7 +1810,21 @@ def main() -> None:
                 sum_spk = int(sc.sum())
                 if sum_spk < 5:
                     retries += 1
+                    if cfg.rollback_state_on_retry and retry_snapshot is not None:
+                        trainer.restore_retry_state(retry_snapshot)
                     if retries >= cfg.max_spike_retries_per_example:
+                        retry_cap_hit = True
+                        retry_cap_hits += 1
+                        collapse_detected = True
+                        sc = np.zeros(cfg.n_e, dtype=np.int32)
+                        sum_spk = 0
+                        out = {
+                            "label": int(label),
+                            "spike_count_e": sc,
+                            "spike_events_e": None,
+                            "v_trace_subset": None,
+                            "mean_gi_e": 0.0,
+                        }
                         print(
                             f"  warning: train ex {k+1} hit retry cap={cfg.max_spike_retries_per_example} "
                             f"at input={current_input_intensity:.2f} with sum_spk={sum_spk}"
@@ -1460,6 +1843,19 @@ def main() -> None:
             if cfg.input_intensity > 0.0:
                 train_input_factor[k] = float(current_input_intensity / cfg.input_intensity)
             train_block_idx[k] = block_idx
+            processed_train_n = k + 1
+
+            last_theta_mean = float(trainer.theta.mean())
+            last_theta_max = float(trainer.theta.max())
+            last_ai_ae_stats = ai_ae_weight_statistics(trainer.W["AiAe"])
+            last_ai_ae_max_fraction = ai_ae_max_fraction(
+                trainer.W["AiAe"], cfg.w_ie_max, trainer.enforce_ie_zero_diag
+            )
+            if sum_spk > cfg.abort_runaway_spike_threshold:
+                consecutive_runaway_examples += 1
+                runaway_detected = True
+            else:
+                consecutive_runaway_examples = 0
 
             global_iter = ep * train_n + (k + 1)
             if cfg.weight_stats_every > 0 and ((k + 1) % cfg.weight_stats_every == 0):
@@ -1468,12 +1864,11 @@ def main() -> None:
                 weight_stats_iter["mean"].append(m_i)
                 weight_stats_iter["l1"].append(l1_i)
                 weight_stats_iter["l2"].append(l2_i)
-                ie_stats = ai_ae_weight_statistics(trainer.W["AiAe"])
                 ie_weight_stats_iter["iteration"].append(global_iter)
-                ie_weight_stats_iter["mean"].append(ie_stats["mean"])
-                ie_weight_stats_iter["min"].append(ie_stats["min"])
-                ie_weight_stats_iter["max"].append(ie_stats["max"])
-                ie_weight_stats_iter["std"].append(ie_stats["std"])
+                ie_weight_stats_iter["mean"].append(last_ai_ae_stats["mean"])
+                ie_weight_stats_iter["min"].append(last_ai_ae_stats["min"])
+                ie_weight_stats_iter["max"].append(last_ai_ae_stats["max"])
+                ie_weight_stats_iter["std"].append(last_ai_ae_stats["std"])
 
             if cfg.plot_every > 0 and ((k + 1) % cfg.plot_every == 0):
                 plot_receptive_fields(
@@ -1515,6 +1910,52 @@ def main() -> None:
                     f"gi_mean={summary['mean_inhibitory_conductance']:.3f}"
                 )
 
+            if consecutive_runaway_examples >= cfg.abort_runaway_consecutive_examples:
+                abort_info = {
+                    "reason": "runaway_spikes_consecutive",
+                    "phase": "train",
+                    "epoch": int(ep),
+                    "example_index": int(k),
+                    "global_iteration": int(global_iter),
+                    "sum_spk": int(sum_spk),
+                    "theta_mean": last_theta_mean,
+                    "theta_max": last_theta_max,
+                    "ai_ae_max": last_ai_ae_stats["max"],
+                    "ai_ae_max_fraction": last_ai_ae_max_fraction,
+                    "mean_gi_e": float(out["mean_gi_e"]),
+                }
+            elif last_theta_mean > cfg.abort_theta_mean_threshold:
+                abort_info = {
+                    "reason": "theta_mean_threshold",
+                    "phase": "train",
+                    "epoch": int(ep),
+                    "example_index": int(k),
+                    "global_iteration": int(global_iter),
+                    "sum_spk": int(sum_spk),
+                    "theta_mean": last_theta_mean,
+                    "theta_max": last_theta_max,
+                    "ai_ae_max": last_ai_ae_stats["max"],
+                    "ai_ae_max_fraction": last_ai_ae_max_fraction,
+                    "mean_gi_e": float(out["mean_gi_e"]),
+                }
+            elif (
+                last_ai_ae_max_fraction > cfg.abort_aiae_max_fraction_threshold and
+                last_ai_ae_max_fraction > (initial_ai_ae_max_fraction + 1e-6)
+            ):
+                abort_info = {
+                    "reason": "aiae_max_fraction_threshold",
+                    "phase": "train",
+                    "epoch": int(ep),
+                    "example_index": int(k),
+                    "global_iteration": int(global_iter),
+                    "sum_spk": int(sum_spk),
+                    "theta_mean": last_theta_mean,
+                    "theta_max": last_theta_max,
+                    "ai_ae_max": last_ai_ae_stats["max"],
+                    "ai_ae_max_fraction": last_ai_ae_max_fraction,
+                    "mean_gi_e": float(out["mean_gi_e"]),
+                }
+
             if cfg.record_istdp_metrics and (((k + 1) - window_start) >= metrics_window or (k + 1) == train_n):
                 w0 = window_start
                 w1 = k + 1
@@ -1535,40 +1976,82 @@ def main() -> None:
                 train_window_records.append(window_metrics)
                 window_start = w1
 
+            if abort_info is not None:
+                print(
+                    f"  aborting run: reason={abort_info['reason']} ex={k+1}/{train_n} "
+                    f"sum_spk={sum_spk} theta_mean={last_theta_mean:.3f} "
+                    f"ai_ae_max_fraction={last_ai_ae_max_fraction:.3f} retry_cap_hit={retry_cap_hit}"
+                )
+                break
+
+        if cfg.record_istdp_metrics and window_start < processed_train_n:
+            window_metrics, _ = compute_activity_metrics(
+                result_monitor[window_start:processed_train_n],
+                train_mean_gi[window_start:processed_train_n],
+                train_input_factor[window_start:processed_train_n]
+            )
+            window_metrics.update(
+                {
+                    "epoch": int(ep),
+                    "phase": "train",
+                    "window_start": int(window_start),
+                    "window_end": int(processed_train_n),
+                    "example_end": int(ep * train_n + processed_train_n),
+                }
+            )
+            train_window_records.append(window_metrics)
+            window_start = processed_train_n
+
         if cfg.weight_stats_every > 0:
-            last_iter = ep * train_n + train_n
+            last_iter = ep * train_n + processed_train_n
             if len(weight_stats_iter["iteration"]) == 0 or weight_stats_iter["iteration"][-1] != last_iter:
                 m_i, l1_i, l2_i = weight_statistics(trainer.W["XeAe"])
                 weight_stats_iter["iteration"].append(last_iter)
                 weight_stats_iter["mean"].append(m_i)
                 weight_stats_iter["l1"].append(l1_i)
                 weight_stats_iter["l2"].append(l2_i)
-                ie_stats = ai_ae_weight_statistics(trainer.W["AiAe"])
                 ie_weight_stats_iter["iteration"].append(last_iter)
-                ie_weight_stats_iter["mean"].append(ie_stats["mean"])
-                ie_weight_stats_iter["min"].append(ie_stats["min"])
-                ie_weight_stats_iter["max"].append(ie_stats["max"])
-                ie_weight_stats_iter["std"].append(ie_stats["std"])
+                ie_weight_stats_iter["mean"].append(last_ai_ae_stats["mean"])
+                ie_weight_stats_iter["min"].append(last_ai_ae_stats["min"])
+                ie_weight_stats_iter["max"].append(last_ai_ae_stats["max"])
+                ie_weight_stats_iter["std"].append(last_ai_ae_stats["std"])
 
-        assignments = compute_assignments(result_monitor, train_labels, cfg.n_e)
+        result_monitor_used = result_monitor[:processed_train_n]
+        train_labels_used = train_labels[:processed_train_n]
+        train_sum_spk_used = train_sum_spk[:processed_train_n]
+        train_active_used = train_active[:processed_train_n]
+        train_mean_gi_used = train_mean_gi[:processed_train_n]
+        train_input_intensity_used = train_input_intensity[:processed_train_n]
+        train_input_factor_used = train_input_factor[:processed_train_n]
+        train_block_idx_used = train_block_idx[:processed_train_n]
+        if processed_train_n > 0:
+            assignments = compute_assignments(result_monitor_used, train_labels_used, cfg.n_e)
+        else:
+            assignments = np.full(cfg.n_e, -1, dtype=np.int32)
         np.save(run_dir / "logs" / f"assignments_ep{ep}.npy", assignments)
-        np.save(run_dir / "logs" / f"train_sum_spk_ep{ep}.npy", train_sum_spk)
-        np.save(run_dir / "logs" / f"train_active_ep{ep}.npy", train_active)
-        np.save(run_dir / "logs" / f"train_mean_gi_ep{ep}.npy", train_mean_gi)
-        np.save(run_dir / "logs" / f"train_input_intensity_ep{ep}.npy", train_input_intensity)
-        np.save(run_dir / "logs" / f"train_input_factor_ep{ep}.npy", train_input_factor)
-        np.save(run_dir / "logs" / f"train_block_idx_ep{ep}.npy", train_block_idx)
+        np.save(run_dir / "logs" / f"train_sum_spk_ep{ep}.npy", train_sum_spk_used)
+        np.save(run_dir / "logs" / f"train_active_ep{ep}.npy", train_active_used)
+        np.save(run_dir / "logs" / f"train_mean_gi_ep{ep}.npy", train_mean_gi_used)
+        np.save(run_dir / "logs" / f"train_input_intensity_ep{ep}.npy", train_input_intensity_used)
+        np.save(run_dir / "logs" / f"train_input_factor_ep{ep}.npy", train_input_factor_used)
+        np.save(run_dir / "logs" / f"train_block_idx_ep{ep}.npy", train_block_idx_used)
 
         train_activity_metrics, train_firing_rates = compute_activity_metrics(
-            result_monitor, train_mean_gi, train_input_factor
+            result_monitor_used, train_mean_gi_used, train_input_factor_used
         )
         train_activity_metrics.update(
-            {"epoch": int(ep), "phase": "train", "inhibition_mode": cfg.inhibition_mode}
+            {
+                "epoch": int(ep),
+                "phase": "train",
+                "inhibition_mode": cfg.inhibition_mode,
+                "aborted": abort_info is not None,
+                "processed_train_examples": int(processed_train_n),
+            }
         )
         with open(run_dir / "logs" / f"train_activity_metrics_ep{ep}.json", "w") as f:
             json.dump(train_activity_metrics, f, indent=2)
         np.save(run_dir / "logs" / f"train_firing_rates_ep{ep}.npy", train_firing_rates)
-        np.save(run_dir / "logs" / f"train_per_neuron_spike_counts_ep{ep}.npy", result_monitor.sum(axis=0))
+        np.save(run_dir / "logs" / f"train_per_neuron_spike_counts_ep{ep}.npy", result_monitor_used.sum(axis=0))
 
         if cfg.record_istdp_metrics:
             with open(run_dir / "logs" / f"train_window_metrics_ep{ep}.json", "w") as f:
@@ -1614,68 +2097,106 @@ def main() -> None:
                 "train firing-rate coefficient of variation"
             )
 
-        test_n = min(cfg.test_examples, x_test.shape[0])
-        y_true = np.zeros(test_n, dtype=np.int32)
-        y_pred = np.zeros(test_n, dtype=np.int32)
-        test_sum_spk = np.zeros(test_n, dtype=np.int32)
-        test_active = np.zeros(test_n, dtype=np.int32)
-        test_mean_gi = np.zeros(test_n, dtype=np.float32)
-        test_input_intensity = np.zeros(test_n, dtype=np.float32)
-        test_input_factor = np.zeros(test_n, dtype=np.float32)
-        test_block_idx = np.zeros(test_n, dtype=np.int32)
-        test_result_monitor = np.zeros((test_n, cfg.n_e), dtype=np.int32)
-
-        for k in range(test_n):
-            if cfg.test_hard_reset_state:
-                trainer.reset_dynamic_state()
-            img = x_test[k]
-            label = int(y_test[k])
-            eval_input_intensity, block_idx, _ = _example_intensity(
-                k, test_n, cfg.input_intensity, protocol_factors
-            )
-            out = trainer.run_one_example(
-                img=img,
-                label=label,
-                training=False,
-                input_intensity=eval_input_intensity,
-                record_spikes=(cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)),
-                record_v=False
-            )
-            sc_i = out["spike_count_e"]
-            sc = sc_i.astype(np.float32)
-            ranking = rank_digits(assignments, sc)
-            y_true[k] = label
-            y_pred[k] = int(ranking[0])
-            test_result_monitor[k, :] = sc_i
-            test_sum_spk[k] = int(sc.sum())
-            test_active[k] = int(np.count_nonzero(sc))
-            test_mean_gi[k] = float(out["mean_gi_e"])
-            test_input_intensity[k] = float(eval_input_intensity)
-            if cfg.input_intensity > 0.0:
-                test_input_factor[k] = float(eval_input_intensity / cfg.input_intensity)
-            test_block_idx[k] = block_idx
-
-            if (cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)):
-                plot_image(img, label, f"test ep{ep} ex{k}", run_dir / "plots" / f"test_img_ep{ep}_ex{k}.png")
-                plot_raster(
-                    out["spike_events_e"],
-                    title=f"test raster ep{ep} ex{k}",
-                    out_png=run_dir / "plots" / f"test_raster_ep{ep}_ex{k}.png",
-                    cfg=cfg,
-                )
-
-            if k == 0 or ((k + 1) % 100 == 0):
-                print(
-                    f"  test ex {k+1}/{test_n} sum_spk={test_sum_spk[k]} active={test_active[k]} "
-                    f"input={eval_input_intensity:.2f} theta_mean={trainer.theta.mean():.3f}"
-                )
-
         test_activity_metrics, test_firing_rates = compute_activity_metrics(
-            test_result_monitor, test_mean_gi, test_input_factor
+            np.zeros((0, cfg.n_e), dtype=np.int32),
+            np.zeros(0, dtype=np.float32),
+            np.zeros(0, dtype=np.float32)
         )
         test_activity_metrics.update(
-            {"epoch": int(ep), "phase": "test", "inhibition_mode": cfg.inhibition_mode}
+            {
+                "epoch": int(ep),
+                "phase": "test",
+                "inhibition_mode": cfg.inhibition_mode,
+                "aborted": abort_info is not None,
+            }
         )
+        y_true = np.zeros(0, dtype=np.int32)
+        y_pred = np.zeros(0, dtype=np.int32)
+        test_sum_spk = np.zeros(0, dtype=np.int32)
+        test_active = np.zeros(0, dtype=np.int32)
+        test_mean_gi = np.zeros(0, dtype=np.float32)
+        test_input_intensity = np.zeros(0, dtype=np.float32)
+        test_input_factor = np.zeros(0, dtype=np.float32)
+        test_block_idx = np.zeros(0, dtype=np.int32)
+        test_result_monitor = np.zeros((0, cfg.n_e), dtype=np.int32)
+        acc: Optional[float] = None
+
+        if abort_info is None:
+            test_n = min(cfg.test_examples, x_test.shape[0])
+            y_true = np.zeros(test_n, dtype=np.int32)
+            y_pred = np.zeros(test_n, dtype=np.int32)
+            test_sum_spk = np.zeros(test_n, dtype=np.int32)
+            test_active = np.zeros(test_n, dtype=np.int32)
+            test_mean_gi = np.zeros(test_n, dtype=np.float32)
+            test_input_intensity = np.zeros(test_n, dtype=np.float32)
+            test_input_factor = np.zeros(test_n, dtype=np.float32)
+            test_block_idx = np.zeros(test_n, dtype=np.int32)
+            test_result_monitor = np.zeros((test_n, cfg.n_e), dtype=np.int32)
+
+            for k in range(test_n):
+                if cfg.test_hard_reset_state:
+                    trainer.reset_dynamic_state()
+                img = x_test[k]
+                label = int(y_test[k])
+                eval_input_intensity, block_idx, _ = _example_intensity(
+                    k, test_n, cfg.input_intensity, protocol_factors
+                )
+                out = trainer.run_one_example(
+                    img=img,
+                    label=label,
+                    training=False,
+                    input_intensity=eval_input_intensity,
+                    record_spikes=(cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)),
+                    record_v=False
+                )
+                sc_i = out["spike_count_e"]
+                sc = sc_i.astype(np.float32)
+                ranking = rank_digits(assignments, sc)
+                y_true[k] = label
+                y_pred[k] = int(ranking[0])
+                test_result_monitor[k, :] = sc_i
+                test_sum_spk[k] = int(sc.sum())
+                test_active[k] = int(np.count_nonzero(sc))
+                test_mean_gi[k] = float(out["mean_gi_e"])
+                test_input_intensity[k] = float(eval_input_intensity)
+                if cfg.input_intensity > 0.0:
+                    test_input_factor[k] = float(eval_input_intensity / cfg.input_intensity)
+                test_block_idx[k] = block_idx
+
+                if (cfg.record_spikes and k < 25) or (cfg.record_spikes and (k % 1000 == 0)):
+                    plot_image(img, label, f"test ep{ep} ex{k}", run_dir / "plots" / f"test_img_ep{ep}_ex{k}.png")
+                    plot_raster(
+                        out["spike_events_e"],
+                        title=f"test raster ep{ep} ex{k}",
+                        out_png=run_dir / "plots" / f"test_raster_ep{ep}_ex{k}.png",
+                        cfg=cfg,
+                    )
+
+                if k == 0 or ((k + 1) % 100 == 0):
+                    print(
+                        f"  test ex {k+1}/{test_n} sum_spk={test_sum_spk[k]} active={test_active[k]} "
+                        f"input={eval_input_intensity:.2f} theta_mean={trainer.theta.mean():.3f}"
+                    )
+
+            test_activity_metrics, test_firing_rates = compute_activity_metrics(
+                test_result_monitor, test_mean_gi, test_input_factor
+            )
+            test_activity_metrics.update(
+                {"epoch": int(ep), "phase": "test", "inhibition_mode": cfg.inhibition_mode, "aborted": False}
+            )
+            acc = float((y_true == y_pred).mean())
+            test_accuracy_over_epochs.append(acc)
+            print(f"Epoch {ep} test accuracy: {acc:.4f}")
+            print(
+                f"Epoch {ep} train spikes mean={train_sum_spk_used.mean():.2f} min={train_sum_spk_used.min()} "
+                f"max={train_sum_spk_used.max()} test spikes mean={test_sum_spk.mean():.2f}"
+            )
+        else:
+            print(
+                f"Epoch {ep} aborted before test evaluation. "
+                f"train spikes mean={train_sum_spk_used.mean():.2f}"
+            )
+
         with open(run_dir / "logs" / f"test_activity_metrics_ep{ep}.json", "w") as f:
             json.dump(test_activity_metrics, f, indent=2)
         np.save(run_dir / "logs" / f"test_firing_rates_ep{ep}.npy", test_firing_rates)
@@ -1686,24 +2207,16 @@ def main() -> None:
         np.save(run_dir / "logs" / f"test_input_factor_ep{ep}.npy", test_input_factor)
         np.save(run_dir / "logs" / f"test_block_idx_ep{ep}.npy", test_block_idx)
 
-        acc = float((y_true == y_pred).mean())
-        test_accuracy_over_epochs.append(acc)
-        print(f"Epoch {ep} test accuracy: {acc:.4f}")
-        print(
-            f"Epoch {ep} train spikes mean={train_sum_spk.mean():.2f} min={train_sum_spk.min()} max={train_sum_spk.max()} "
-            f"test spikes mean={test_sum_spk.mean():.2f}"
-        )
-
         train_protocol_records: List[Dict[str, Any]] = []
         test_protocol_records: List[Dict[str, Any]] = []
-        if cfg.use_input_intensity_protocol:
+        if cfg.use_input_intensity_protocol and abort_info is None:
             for block_id in range(protocol_factors.size):
-                train_idx = np.where(train_block_idx == block_id)[0]
+                train_idx = np.where(train_block_idx_used == block_id)[0]
                 if train_idx.size > 0:
                     block_metrics, _ = compute_activity_metrics(
-                        result_monitor[train_idx],
-                        train_mean_gi[train_idx],
-                        train_input_factor[train_idx]
+                        result_monitor_used[train_idx],
+                        train_mean_gi_used[train_idx],
+                        train_input_factor_used[train_idx]
                     )
                     block_metrics.update(
                         {
@@ -1760,34 +2273,91 @@ def main() -> None:
                 f"test activity vs intensity epoch {ep}"
             )
 
-        ai_ae_stats = ai_ae_weight_statistics(trainer.W["AiAe"])
+        ai_ae_stats = last_ai_ae_stats
         metrics = {
             "epoch": ep,
             "accuracy": acc,
             "inhibition_mode": cfg.inhibition_mode,
+            "istdp_rule": cfg.istdp_rule,
             "ai_ae_mean": ai_ae_stats["mean"],
             "ai_ae_min": ai_ae_stats["min"],
             "ai_ae_max": ai_ae_stats["max"],
             "ai_ae_std": ai_ae_stats["std"],
+            "ai_ae_max_fraction": last_ai_ae_max_fraction,
+            "theta_mean": last_theta_mean,
+            "theta_max": last_theta_max,
+            "aborted": abort_info is not None,
+            "abort_reason": abort_info["reason"] if abort_info is not None else "",
+            "processed_train_examples": int(processed_train_n),
+            "retry_cap_hits": int(retry_cap_hits),
+            "runaway_detected": bool(runaway_detected),
+            "collapse_detected": bool(collapse_detected),
+            "istdp_during_rest": bool(cfg.istdp_during_rest),
+            "rollback_state_on_retry": bool(cfg.rollback_state_on_retry),
         }
         metrics.update({f"train_{k}": v for k, v in train_activity_metrics.items()})
         metrics.update({f"test_{k}": v for k, v in test_activity_metrics.items()})
         with open(run_dir / "logs" / f"metrics_ep{ep}.json", "w") as f:
             json.dump(metrics, f, indent=2)
 
-        _save_confusion_matrix(
-            y_true, y_pred,
-            run_dir / "plots" / f"confusion_matrix_ep{ep}.png",
-            f"confusion matrix epoch {ep}, acc={acc:.3f}"
-        )
-        plot_accuracy_over_epochs(test_accuracy_over_epochs, run_dir / "plots" / "accuracy_over_epochs.png")
-        plot_rate_histogram(
-            test_firing_rates,
-            run_dir / "plots" / f"test_firing_rate_distribution_ep{ep}.png",
-            f"test E firing-rate distribution ({cfg.inhibition_mode}) epoch {ep}"
-        )
+        if acc is not None:
+            _save_confusion_matrix(
+                y_true, y_pred,
+                run_dir / "plots" / f"confusion_matrix_ep{ep}.png",
+                f"confusion matrix epoch {ep}, acc={acc:.3f}"
+            )
+            plot_accuracy_over_epochs(test_accuracy_over_epochs, run_dir / "plots" / "accuracy_over_epochs.png")
+            plot_rate_histogram(
+                test_firing_rates,
+                run_dir / "plots" / f"test_firing_rate_distribution_ep{ep}.png",
+                f"test E firing-rate distribution ({cfg.inhibition_mode}) epoch {ep}"
+            )
 
-    print(f"Done. Outputs in {run_dir}")
+        final_run_summary = {
+            "mode": cfg.inhibition_mode,
+            "istdp_rule": cfg.istdp_rule,
+            "eta_ie": cfg.eta_ie,
+            "rho_ie": cfg.rho_ie,
+            "w_ie_max": cfg.w_ie_max,
+            "theta_gate_ref_mV": cfg.theta_gate_ref_mV,
+            "theta_gate_scale_mV": cfg.theta_gate_scale_mV,
+            "slow_homeostat_target_rate_hz": cfg.slow_homeostat_target_rate_hz,
+            "aborted": abort_info is not None,
+            "abort_reason": abort_info["reason"] if abort_info is not None else "",
+            "accuracy": acc,
+            "train_mean_spikes": train_activity_metrics["mean_e_spikes_per_image"],
+            "train_usage_entropy_norm": train_activity_metrics["usage_entropy_norm"],
+            "dead_fraction": train_activity_metrics["dead_neuron_fraction"],
+            "firing_rate_cv": train_activity_metrics["firing_rate_cv"],
+            "gi_mean": train_activity_metrics["mean_inhibitory_conductance"],
+            "ai_ae_mean": ai_ae_stats["mean"],
+            "ai_ae_max": ai_ae_stats["max"],
+            "ai_ae_std": ai_ae_stats["std"],
+            "theta_mean": last_theta_mean,
+            "theta_max": last_theta_max,
+            "processed_train_examples": int(processed_train_n),
+            "retry_cap_hits": int(retry_cap_hits),
+            "runaway_detected": bool(runaway_detected),
+            "collapse_detected": bool(collapse_detected),
+            "aiae_max_fraction": last_ai_ae_max_fraction,
+            "initial_aiae_max_fraction": initial_ai_ae_max_fraction,
+            "istdp_during_rest": bool(cfg.istdp_during_rest),
+            "rollback_state_on_retry": bool(cfg.rollback_state_on_retry),
+            "metrics_window": int(cfg.metrics_window),
+            "train_examples_requested": int(cfg.train_examples),
+            "test_examples_requested": int(cfg.test_examples),
+            "seed": int(cfg.seed),
+            "out_dir": str(run_dir),
+        }
+        write_run_summary(run_dir, final_run_summary)
+        if abort_info is not None:
+            write_abort_notes(run_dir, cfg, abort_info, final_run_summary)
+            break
+
+    if final_run_summary.get("aborted"):
+        print(f"Run aborted. Outputs in {run_dir}")
+    else:
+        print(f"Done. Outputs in {run_dir}")
 
 
 if __name__ == "__main__":
