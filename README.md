@@ -142,8 +142,8 @@ The figure script writes panels to `papers/preprint/figures/` in your local work
 ## Citation
 If you use this code before the preprint DOI is available, please cite the GitHub repository with the commit hash you used:
 
-```text
-Musacchio F, Fuhrmann M. Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks. bioRxiv, forthcoming.
-```
+
+> Musacchio F, Fuhrmann M. Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks. bioRxiv, forthcoming.
+
 
 The simulation data required to reproduce the preprint figures will be deposited on Zenodo. DOI: forthcoming.
