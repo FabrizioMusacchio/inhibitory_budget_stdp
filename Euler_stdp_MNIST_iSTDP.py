@@ -14,22 +14,20 @@ You can run the code via command line or in VS Code's interactive Python environ
 In general:
 
 ```bash
-python Euler_stdp_MNIST.py --out_dir ./runs/diehl_cook_euler --epochs 1 --train_examples 60000 --test_examples 10000
+python Euler_stdp_MNIST_iSTDP.py --out-dir ./runs/diehl_cook_euler --epochs 1 --train-examples 60000 --test-examples 10000
 ```
 
 E.g., 
 
 ```bash
-source /Users/husker/miniforge3/etc/profile.d/conda.sh
-conda activate nest
-MPLCONFIGDIR=/tmp/mpl python /Users/husker/Science/Python/Projekte/SNN\ STDP\ MNIST/Euler_stdp_MNIST.py \
-  --mnist-npz-path /Users/husker/.keras/datasets/mnist.npz \
+MPLCONFIGDIR=/tmp/mpl python Euler_stdp_MNIST_iSTDP.py \
+  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
   --epochs 1 --train-examples 60000 --test-examples 10000 \
   --update-interval 10000 --plot-every 100 \
   --no-record-spikes \
   --w-aiae 20.0 \
   --input-intensity 2.0 \
-  --out-dir /Users/husker/Science/Python/Projekte/SNN\ STDP\ MNIST/runs/real_full_60k
+  --out-dir runs/real_full_60k
 ```
 
 This will run the full Diehl-Cook training for 1 epoch on all 60k training examples and then test on 
@@ -1501,7 +1499,7 @@ def _load_mnist_from_npz(path: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndar
 def _load_mnist(cfg: SimConfig) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]:
     candidate_dirs: List[Path] = []
     seen = set()
-    for p in [Path(cfg.mnist_data_dir), Path.cwd(), Path("original_implementation_2015")]:
+    for p in [Path(cfg.mnist_data_dir), Path.cwd()]:
         r = p.resolve()
         if str(r) not in seen:
             seen.add(str(r))
