@@ -3,6 +3,9 @@
 Panels are rebuilt from aggregated summaries, saved run summaries, and run-level
 logs. Dependencies are limited to the standard library, NumPy, and Matplotlib so
 that the script runs in the existing ``diehl_cook_euler`` environment.
+
+author: Fabrizio Musacchio
+date:   August 2026
 """
 # %% IMPORTS
 from __future__ import annotations
