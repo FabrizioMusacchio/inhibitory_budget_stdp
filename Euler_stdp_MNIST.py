@@ -37,6 +37,8 @@ This will run the full Diehl-Cook training for 1 epoch on all 60k training examp
 all 10k test examples, with the specified parameters. Adjust the parameters as needed for quicker runs 
 or different configurations.
 
+author: Fabrizio Musacchio
+date:   Feb, 2026
 
 """
 # %% IMPORTS
@@ -180,12 +182,9 @@ class SimConfig:
     # Receptive field visualization
     rf_grid_sqrt: int = 20  # sqrt(400)=20, arrangement for 2d plots
     plot_every: int = 100
-
 # %% FUNCTIONS
-# =========================
-# Utilities
-# =========================
 
+# Utilities:
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
@@ -199,10 +198,7 @@ def _steps_from_ms(cfg: SimConfig, t_ms: float) -> int:
     return int(round(t_ms / cfg.dt_ms))
 
 
-# =========================
-# Weight init and IO
-# =========================
-
+# Weight init and IO:
 def init_weights(cfg: SimConfig, rng: np.random.Generator) -> Dict[str, np.ndarray]:
     """
     Initialize weights with the same spirit as random_conn_generator.py.
@@ -244,9 +240,7 @@ def normalize_columns_l1(W: np.ndarray, target_sum: float) -> None:
     W *= factors[np.newaxis, :]
 
 
-# =========================
-# Numba kernels
-# =========================
+# Numba kernels:
 
 @njit(cache=True)
 def _poisson_spikes(rates_hz: np.ndarray, dt_s: float, rng_u: np.ndarray) -> np.ndarray:
@@ -419,10 +413,7 @@ def _stdp_post_update(
             W[i, j] = w
 
 
-# =========================
-# Assignment and decoding
-# =========================
-
+# Assignment and decoding:
 def compute_assignments(result_monitor: np.ndarray, labels: np.ndarray, n_e: int) -> np.ndarray:
     """
     Like get_new_assignments: for each neuron pick the digit that yields maximal mean rate.
@@ -452,10 +443,7 @@ def rank_digits(assignments: np.ndarray, spike_rates: np.ndarray) -> np.ndarray:
     return np.argsort(summed)[::-1]
 
 
-# =========================
-# Main trainer
-# =========================
-
+# Main trainer:
 class DiehlCookEuler:
     def __init__(self, cfg: SimConfig):
         self.cfg = cfg
@@ -700,9 +688,8 @@ class DiehlCookEuler:
         }
 
 
-# =========================
-# Plotting helpers
-# =========================
+
+# Plotting helpers:
 
 def plot_raster(spike_events: np.ndarray, 
                 title: str, 
@@ -788,7 +775,6 @@ def plot_weight_stats(stats: Dict[str, List[float]], out_png: Path) -> None:
     plt.savefig(out_png, dpi=200)
     plt.close()
 
-
 def plot_weight_stats_iterations(stats: Dict[str, List[float]], out_png: Path) -> None:
     iterations = np.asarray(stats["iteration"], dtype=np.int32)
     if iterations.size == 0:
@@ -815,7 +801,6 @@ def plot_weight_stats_iterations(stats: Dict[str, List[float]], out_png: Path) -
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
-
 
 def plot_accuracy_over_epochs(accuracies: List[float], out_png: Path) -> None:
     acc = np.asarray(accuracies, dtype=np.float32)
@@ -844,7 +829,6 @@ def _open_binary_file(path: Path):
         return gzip.open(path, "rb")
     return open(path, "rb")
 
-
 def _read_idx_images(path: Path) -> np.ndarray:
     with _open_binary_file(path) as f:
         magic, n, rows, cols = struct.unpack(">IIII", f.read(16))
@@ -853,7 +837,6 @@ def _read_idx_images(path: Path) -> np.ndarray:
         data = np.frombuffer(f.read(n * rows * cols), dtype=np.uint8)
     return data.reshape(n, rows, cols)
 
-
 def _read_idx_labels(path: Path) -> np.ndarray:
     with _open_binary_file(path) as f:
         magic, n = struct.unpack(">II", f.read(8))
@@ -861,7 +844,6 @@ def _read_idx_labels(path: Path) -> np.ndarray:
             raise ValueError(f"invalid IDX label file magic in {path}: {magic}")
         data = np.frombuffer(f.read(n), dtype=np.uint8)
     return data
-
 
 def _find_first_existing(base_dir: Path, names: List[str]) -> Optional[Path]:
     for name in names:
@@ -872,7 +854,6 @@ def _find_first_existing(base_dir: Path, names: List[str]) -> Optional[Path]:
         if gz.exists():
             return gz
     return None
-
 
 def _load_mnist_from_idx_dir(base_dir: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]]:
     train_img = _find_first_existing(base_dir, ["train-images-idx3-ubyte", "train-images.idx3-ubyte"])
@@ -887,7 +868,6 @@ def _load_mnist_from_idx_dir(base_dir: Path) -> Optional[Tuple[Tuple[np.ndarray,
     y_test = _read_idx_labels(test_lbl)    # type: ignore[arg-type]
     return (x_train, y_train), (x_test, y_test), f"idx:{base_dir}"
 
-
 def _load_mnist_from_npz(path: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]]:
     if not path.exists():
         return None
@@ -896,7 +876,6 @@ def _load_mnist_from_npz(path: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndar
     if not required.issubset(set(data.keys())):
         return None
     return (data["x_train"], data["y_train"]), (data["x_test"], data["y_test"]), f"npz:{path}"
-
 
 def _load_mnist(cfg: SimConfig) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]:
     candidate_dirs: List[Path] = []
@@ -938,7 +917,6 @@ def _load_mnist(cfg: SimConfig) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np
         "MNIST dataset not found. Provide IDX files (train/t10k) in --mnist-data-dir, "
         "or provide --mnist-npz-path, or install tensorflow.keras."
     )
-
 
 def _build_cfg_from_cli() -> SimConfig:
     parser = argparse.ArgumentParser(description="Euler-based Diehl & Cook STDP MNIST")
@@ -1004,7 +982,6 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.allow_synthetic_data = True
     return cfg
 
-
 def _save_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path, title: str) -> None:
     if _HAS_SK:
         cm = confusion_matrix(y_true, y_pred, labels=np.arange(10))
@@ -1030,7 +1007,7 @@ def _save_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, out_path: Pat
     plt.savefig(out_path, dpi=200)
     plt.close()
 
-
+# %% MAIN FUNCTION
 def main() -> None:
     cfg = _build_cfg_from_cli()
     run_dir = Path(cfg.out_dir)
@@ -1236,7 +1213,7 @@ def main() -> None:
         plot_accuracy_over_epochs(test_accuracy_over_epochs, run_dir / "plots" / "accuracy_over_epochs.png")
 
     print(f"Done. Outputs in {run_dir}")
-
-
+# %% MAIN ENTRY POINT
 if __name__ == "__main__":
     main()
+# %% END
