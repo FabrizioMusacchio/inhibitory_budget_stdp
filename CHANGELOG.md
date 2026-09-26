@@ -9,7 +9,7 @@ Each release can be archived on Zenodo for long-term preservation and citation p
 <!-- 
 ---
 
-## 🔜 Inhibitory_Budget_STDP v0.0.2 UPCOMING RELEASE
+## 🔜 Inhibitory_Budget_STDP v0.0.3 UPCOMING RELEASE
 
 Unreleased
  -->
@@ -23,6 +23,7 @@ Unreleased
 ### 📚 Documentation
 
 - Added the published Zenodo data archive for the simulation outputs required to reproduce the preprint analyses: https://doi.org/10.5281/zenodo.22976539.
+- Added the published Zenodo software archive for the v0.0.1 code release: https://doi.org/10.5281/zenodo.22976646.
 
 ---
 

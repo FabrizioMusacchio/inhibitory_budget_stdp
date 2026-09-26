@@ -147,6 +147,9 @@ If you use this code before the preprint DOI is available, please cite the GitHu
 
 > Musacchio F., and Fuhrmann M., *Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks*. bioRxiv, forthcoming.
 
+In case you additionally want to cite a specific archived software version of the analysis scripts, please use the following reference:
+
+> Musacchio, F., & Fuhrmann, M. (2026). *Inhibitory Budget STDP: code for budget-constrained inhibitory plasticity in competitive STDP networks* [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22976645
 
 The simulation data required to reproduce the preprint figures are archived on Zenodo:
 
