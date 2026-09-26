@@ -1,5 +1,4 @@
 r"""
-
 Installation
 -------------
 Create a conda environment with Python 3.12 or later, and install the required packages:
@@ -37,7 +36,8 @@ This will run the full Diehl-Cook training for 1 epoch on all 60k training examp
 all 10k test examples, with the specified parameters. Adjust the parameters as needed for quicker runs 
 or different configurations.
 
-
+author: Fabrizio Musacchio
+date:   Jun, 2026
 """
 # %% IMPORTS
 from __future__ import annotations
@@ -186,6 +186,7 @@ class SimConfig:
     rollback_state_on_retry: bool = True
     abort_runaway_spike_threshold: int = 5000
     abort_runaway_consecutive_examples: int = 20
+    abort_retry_cap_consecutive_examples: int = 100
     abort_theta_mean_threshold: float = 200.0
     abort_aiae_max_fraction_threshold: float = 0.2
 
@@ -210,10 +211,8 @@ class SimConfig:
     plot_every: int = 100
 
 # %% FUNCTIONS
-# =========================
-# Utilities
-# =========================
 
+# Utilities:
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
@@ -227,10 +226,7 @@ def _steps_from_ms(cfg: SimConfig, t_ms: float) -> int:
     return int(round(t_ms / cfg.dt_ms))
 
 
-# =========================
-# Weight init and IO
-# =========================
-
+# Weight init and IO:
 def init_weights(cfg: SimConfig, rng: np.random.Generator) -> Dict[str, np.ndarray]:
     """
     Initialize weights with the same spirit as random_conn_generator.py.
@@ -272,7 +268,6 @@ def normalize_columns_l1(W: np.ndarray, target_sum: float) -> None:
     factors = target_sum / col_sums
     W *= factors[np.newaxis, :]
 
-
 def normalize_aiae_columns_l1(W: np.ndarray, target_sum: float, enforce_zero_diag: bool) -> None:
     if target_sum <= 0.0:
         return
@@ -295,10 +290,7 @@ def normalize_aiae_columns_l1(W: np.ndarray, target_sum: float, enforce_zero_dia
     normalize_columns_l1(W, target_sum=target_sum)
 
 
-# =========================
-# Numba kernels
-# =========================
-
+# Numba kernels:
 @njit(cache=True)
 def _poisson_spikes(rates_hz: np.ndarray, dt_s: float, rng_u: np.ndarray) -> np.ndarray:
     """
@@ -446,7 +438,6 @@ def _stdp_pre_update(
                 w = wmax
             W[i, j] = w
 
-
 @njit(cache=True)
 def _stdp_post_update(
     W: np.ndarray,
@@ -468,7 +459,6 @@ def _stdp_post_update(
             elif w > wmax:
                 w = wmax
             W[i, j] = w
-
 
 @njit(cache=True)
 def _istdp_pre_update(
@@ -494,7 +484,6 @@ def _istdp_pre_update(
             elif w > wmax:
                 w = wmax
             W[i, j] = w
-
 
 @njit(cache=True)
 def _istdp_pre_update_centered(
@@ -523,7 +512,6 @@ def _istdp_pre_update_centered(
                 w = wmax
             W[i, j] = w
 
-
 @njit(cache=True)
 def _theta_gate_value(theta_value: float, theta_ref: float, theta_scale: float) -> float:
     if theta_scale <= 0.0:
@@ -532,7 +520,6 @@ def _theta_gate_value(theta_value: float, theta_ref: float, theta_scale: float) 
     if delta <= 0.0:
         return 1.0
     return math.exp(-delta / theta_scale)
-
 
 @njit(cache=True)
 def _istdp_pre_update_theta_gated(
@@ -563,7 +550,6 @@ def _istdp_pre_update_theta_gated(
                 w = wmax
             W[i, j] = w
 
-
 @njit(cache=True)
 def _istdp_post_update(
     W: np.ndarray,
@@ -587,7 +573,6 @@ def _istdp_post_update(
             elif w > wmax:
                 w = wmax
             W[i, j] = w
-
 
 @njit(cache=True)
 def _istdp_post_update_theta_gated(
@@ -616,7 +601,6 @@ def _istdp_post_update_theta_gated(
             elif w > wmax:
                 w = wmax
             W[i, j] = w
-
 
 @njit(cache=True)
 def _slow_ie_homeostat_update(
@@ -652,10 +636,7 @@ def _slow_ie_homeostat_update(
             W[i, j] = w
 
 
-# =========================
 # Assignment and decoding
-# =========================
-
 def compute_assignments(result_monitor: np.ndarray, labels: np.ndarray, n_e: int) -> np.ndarray:
     """
     Like get_new_assignments: for each neuron pick the digit that yields maximal mean rate.
@@ -685,10 +666,8 @@ def rank_digits(assignments: np.ndarray, spike_rates: np.ndarray) -> np.ndarray:
     return np.argsort(summed)[::-1]
 
 
-# =========================
-# Main trainer
-# =========================
 
+# Main trainer:
 class DiehlCookEuler:
     def __init__(self, cfg: SimConfig):
         self.cfg = cfg
@@ -1090,10 +1069,8 @@ class DiehlCookEuler:
         }
 
 
-# =========================
-# Plotting helpers
-# =========================
 
+# Plotting helpers:
 def plot_raster(spike_events: np.ndarray, 
                 title: str, 
                 out_png: Path,
@@ -1178,7 +1155,6 @@ def plot_weight_stats(stats: Dict[str, List[float]], out_png: Path) -> None:
     plt.savefig(out_png, dpi=200)
     plt.close()
 
-
 def plot_weight_stats_iterations(stats: Dict[str, List[float]], out_png: Path) -> None:
     iterations = np.asarray(stats["iteration"], dtype=np.int32)
     if iterations.size == 0:
@@ -1205,7 +1181,6 @@ def plot_weight_stats_iterations(stats: Dict[str, List[float]], out_png: Path) -
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     plt.close()
-
 
 def plot_accuracy_over_epochs(accuracies: List[float], out_png: Path) -> None:
     acc = np.asarray(accuracies, dtype=np.float32)
@@ -1475,7 +1450,6 @@ def _open_binary_file(path: Path):
         return gzip.open(path, "rb")
     return open(path, "rb")
 
-
 def _read_idx_images(path: Path) -> np.ndarray:
     with _open_binary_file(path) as f:
         magic, n, rows, cols = struct.unpack(">IIII", f.read(16))
@@ -1484,7 +1458,6 @@ def _read_idx_images(path: Path) -> np.ndarray:
         data = np.frombuffer(f.read(n * rows * cols), dtype=np.uint8)
     return data.reshape(n, rows, cols)
 
-
 def _read_idx_labels(path: Path) -> np.ndarray:
     with _open_binary_file(path) as f:
         magic, n = struct.unpack(">II", f.read(8))
@@ -1492,7 +1465,6 @@ def _read_idx_labels(path: Path) -> np.ndarray:
             raise ValueError(f"invalid IDX label file magic in {path}: {magic}")
         data = np.frombuffer(f.read(n), dtype=np.uint8)
     return data
-
 
 def _find_first_existing(base_dir: Path, names: List[str]) -> Optional[Path]:
     for name in names:
@@ -1503,7 +1475,6 @@ def _find_first_existing(base_dir: Path, names: List[str]) -> Optional[Path]:
         if gz.exists():
             return gz
     return None
-
 
 def _load_mnist_from_idx_dir(base_dir: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]]:
     train_img = _find_first_existing(base_dir, ["train-images-idx3-ubyte", "train-images.idx3-ubyte"])
@@ -1518,7 +1489,6 @@ def _load_mnist_from_idx_dir(base_dir: Path) -> Optional[Tuple[Tuple[np.ndarray,
     y_test = _read_idx_labels(test_lbl)    # type: ignore[arg-type]
     return (x_train, y_train), (x_test, y_test), f"idx:{base_dir}"
 
-
 def _load_mnist_from_npz(path: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]]:
     if not path.exists():
         return None
@@ -1527,7 +1497,6 @@ def _load_mnist_from_npz(path: Path) -> Optional[Tuple[Tuple[np.ndarray, np.ndar
     if not required.issubset(set(data.keys())):
         return None
     return (data["x_train"], data["y_train"]), (data["x_test"], data["y_test"]), f"npz:{path}"
-
 
 def _load_mnist(cfg: SimConfig) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], str]:
     candidate_dirs: List[Path] = []
@@ -1570,7 +1539,6 @@ def _load_mnist(cfg: SimConfig) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np
         "or provide --mnist-npz-path, or install tensorflow.keras."
     )
 
-
 def _build_cfg_from_cli() -> SimConfig:
     parser = argparse.ArgumentParser(description="Euler-based Diehl & Cook STDP MNIST")
     parser.add_argument("--epochs", type=int, default=None)
@@ -1583,6 +1551,8 @@ def _build_cfg_from_cli() -> SimConfig:
     parser.add_argument("--mnist-data-dir", type=str, default=None)
     parser.add_argument("--mnist-npz-path", type=str, default=None)
     parser.add_argument("--input-intensity", type=float, default=None)
+    parser.add_argument("--theta-plus-mv", type=float, default=None)
+    parser.add_argument("--tc-theta-ms", type=float, default=None)
     parser.add_argument("--input-intensity-protocol", action="store_true")
     parser.add_argument("--input-intensity-factors", type=str, default=None)
     parser.add_argument("--max-spike-retries-per-example", type=int, default=None)
@@ -1614,6 +1584,7 @@ def _build_cfg_from_cli() -> SimConfig:
     parser.add_argument("--no-rollback-state-on-retry", action="store_true")
     parser.add_argument("--abort-runaway-spike-threshold", type=int, default=None)
     parser.add_argument("--abort-runaway-consecutive-examples", type=int, default=None)
+    parser.add_argument("--abort-retry-cap-consecutive-examples", type=int, default=None)
     parser.add_argument("--abort-theta-mean-threshold", type=float, default=None)
     parser.add_argument("--abort-aiae-max-fraction-threshold", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -1647,6 +1618,10 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.mnist_npz_path = args.mnist_npz_path
     if args.input_intensity is not None:
         cfg.input_intensity = args.input_intensity
+    if args.theta_plus_mv is not None:
+        cfg.theta_plus_mV = args.theta_plus_mv
+    if args.tc_theta_ms is not None:
+        cfg.tc_theta_ms = args.tc_theta_ms
     if args.input_intensity_protocol:
         cfg.use_input_intensity_protocol = True
     if args.input_intensity_factors is not None:
@@ -1701,6 +1676,8 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.abort_runaway_spike_threshold = args.abort_runaway_spike_threshold
     if args.abort_runaway_consecutive_examples is not None:
         cfg.abort_runaway_consecutive_examples = args.abort_runaway_consecutive_examples
+    if args.abort_retry_cap_consecutive_examples is not None:
+        cfg.abort_retry_cap_consecutive_examples = args.abort_retry_cap_consecutive_examples
     if args.abort_theta_mean_threshold is not None:
         cfg.abort_theta_mean_threshold = args.abort_theta_mean_threshold
     if args.abort_aiae_max_fraction_threshold is not None:
@@ -1725,8 +1702,7 @@ def _build_cfg_from_cli() -> SimConfig:
         cfg.normalize_aiae_columns = True
     return cfg
 
-
-def _save_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path, title: str) -> None:
+def _save_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, out_path: Path, title: str) -> np.ndarray:
     if _HAS_SK:
         cm = confusion_matrix(y_true, y_pred, labels=np.arange(10))
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=np.arange(10))
@@ -1736,7 +1712,7 @@ def _save_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, out_path: Pat
         fig.tight_layout()
         fig.savefig(out_path, dpi=200)
         plt.close(fig)
-        return
+        return cm
 
     cm = np.zeros((10, 10), dtype=np.int32)
     for a, b in zip(y_true, y_pred):
@@ -1750,8 +1726,8 @@ def _save_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, out_path: Pat
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
     plt.close()
-
-
+    return cm
+# %% MAIN FUNCTION
 def main() -> None:
     cfg = _build_cfg_from_cli()
     run_dir = Path(cfg.out_dir)
@@ -1819,6 +1795,7 @@ def main() -> None:
         processed_train_n = 0
         abort_info: Optional[Dict[str, Any]] = None
         consecutive_runaway_examples = 0
+        consecutive_retry_cap_examples = 0
         retry_cap_hits = 0
         runaway_detected = False
         collapse_detected = False
@@ -1908,6 +1885,10 @@ def main() -> None:
                 runaway_detected = True
             else:
                 consecutive_runaway_examples = 0
+            if retry_cap_hit:
+                consecutive_retry_cap_examples += 1
+            else:
+                consecutive_retry_cap_examples = 0
 
             global_iter = ep * train_n + (k + 1)
             if cfg.weight_stats_every > 0 and ((k + 1) % cfg.weight_stats_every == 0):
@@ -1975,6 +1956,22 @@ def main() -> None:
                     "ai_ae_max": last_ai_ae_stats["max"],
                     "ai_ae_max_fraction": last_ai_ae_max_fraction,
                     "mean_gi_e": float(out["mean_gi_e"]),
+                }
+            elif consecutive_retry_cap_examples >= cfg.abort_retry_cap_consecutive_examples:
+                abort_info = {
+                    "reason": "collapse_retry_cap_consecutive",
+                    "phase": "train",
+                    "epoch": int(ep),
+                    "example_index": int(k),
+                    "global_iteration": int(global_iter),
+                    "sum_spk": int(sum_spk),
+                    "theta_mean": last_theta_mean,
+                    "theta_max": last_theta_max,
+                    "ai_ae_max": last_ai_ae_stats["max"],
+                    "ai_ae_max_fraction": last_ai_ae_max_fraction,
+                    "mean_gi_e": float(out["mean_gi_e"]),
+                    "consecutive_retry_cap_examples": int(consecutive_retry_cap_examples),
+                    "retry_cap_hits": int(retry_cap_hits),
                 }
             elif last_theta_mean > cfg.abort_theta_mean_threshold:
                 abort_info = {
@@ -2258,6 +2255,8 @@ def main() -> None:
         np.save(run_dir / "logs" / f"test_input_intensity_ep{ep}.npy", test_input_intensity)
         np.save(run_dir / "logs" / f"test_input_factor_ep{ep}.npy", test_input_factor)
         np.save(run_dir / "logs" / f"test_block_idx_ep{ep}.npy", test_block_idx)
+        np.save(run_dir / "logs" / f"test_y_true_ep{ep}.npy", y_true)
+        np.save(run_dir / "logs" / f"test_y_pred_ep{ep}.npy", y_pred)
 
         train_protocol_records: List[Dict[str, Any]] = []
         test_protocol_records: List[Dict[str, Any]] = []
@@ -2356,11 +2355,12 @@ def main() -> None:
             json.dump(metrics, f, indent=2)
 
         if acc is not None:
-            _save_confusion_matrix(
+            cm = _save_confusion_matrix(
                 y_true, y_pred,
                 run_dir / "plots" / f"confusion_matrix_ep{ep}.png",
                 f"confusion matrix epoch {ep}, acc={acc:.3f}"
             )
+            np.save(run_dir / "logs" / f"confusion_matrix_ep{ep}.npy", cm.astype(np.int32, copy=False))
             plot_accuracy_over_epochs(test_accuracy_over_epochs, run_dir / "plots" / "accuracy_over_epochs.png")
             plot_rate_histogram(
                 test_firing_rates,
@@ -2371,6 +2371,11 @@ def main() -> None:
         final_run_summary = {
             "mode": cfg.inhibition_mode,
             "istdp_rule": cfg.istdp_rule,
+            "input_intensity": cfg.input_intensity,
+            "w_aeai": cfg.w_aeai,
+            "w_aiae": cfg.w_aiae,
+            "theta_plus_mV": cfg.theta_plus_mV,
+            "tc_theta_ms": cfg.tc_theta_ms,
             "eta_ie": cfg.eta_ie,
             "rho_ie": cfg.rho_ie,
             "w_ie_max": cfg.w_ie_max,
@@ -2416,7 +2421,7 @@ def main() -> None:
         print(f"Run aborted. Outputs in {run_dir}")
     else:
         print(f"Done. Outputs in {run_dir}")
-
-
+# %% MAIN ENTRY POINT
 if __name__ == "__main__":
     main()
+# %% END
