@@ -4,7 +4,7 @@ This repository contains an Euler-integrated competitive spiking neural network 
 
 In this study, we asked when fixed lateral inhibition can be replaced by adaptive inhibitory synapses without destroying the competitive operating regime that supports unsupervised representation learning. The main simulation script supports fixed inhibition, a Vogels-style inhibitory STDP rule, a slow homeostatic inhibitory rule, and a budget-constrained slow homeostatic rule that conserves the total inhibitory input to each excitatory neuron.
 
-Large run outputs and manuscript files are not stored in this GitHub repository. The datasets needed to reproduce the preprint analyses are stored in a separate Zenodo archive (see below; also see [runs/README.md](runs/README.md).
+Large run outputs and manuscript files are not stored in this GitHub repository. The datasets needed to reproduce the preprint analyses are stored in a separate Zenodo archive (see below; also see [runs/README.md](runs/README.md)).
 
 Repository Layout:
 
@@ -125,6 +125,8 @@ For full 30k-example sweeps, the manifest-based SLURM workflow in [hpc/README.md
 ## Recreating preprint figures
 After downloading the Zenodo data package, place the following folders under `runs/`:
 
+> Musacchio, F. (2026). *Simulation data for inhibitory budget matching in competitive STDP networks* [Dataset]. Zenodo. https://doi.org/10.5281/zenodo.22976539
+
 ```text
 runs/long_30k_sweeps_manifest_HPC/
 runs/slow_budget_maps_30k_manifest_HPC/
@@ -137,7 +139,7 @@ Then regenerate the analysis panels with:
 MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python additional_scripts/preprint_generate_figures.py
 ```
 
-The figure script writes panels to `papers/preprint/figures/` in your local working copy. .
+The figure script writes panels to `papers/preprint/figures/` in your local working copy.
 
 ## Citation
 If you use this code before the preprint DOI is available, please cite the GitHub repository with the commit hash you used:
@@ -146,4 +148,6 @@ If you use this code before the preprint DOI is available, please cite the GitHu
 > Musacchio F., and Fuhrmann M., *Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks*. bioRxiv, forthcoming.
 
 
-The simulation data required to reproduce the preprint figures will be deposited on Zenodo. DOI: forthcoming.
+The simulation data required to reproduce the preprint figures are archived on Zenodo:
+
+> Musacchio, F. (2026). *Simulation data for inhibitory budget matching in competitive STDP networks* [Dataset]. Zenodo. https://doi.org/10.5281/zenodo.22976539

@@ -2,6 +2,8 @@
 
 Large simulation outputs are intentionally not tracked in Git. To reproduce the preprint analyses and figure panels, download the associated Zenodo archive and place the following folders inside this `runs/` directory:
 
+> Musacchio, F. (2026). *Simulation data for inhibitory budget matching in competitive STDP networks* [Dataset]. Zenodo. https://doi.org/10.5281/zenodo.22976539
+
 ```text
 runs/long_30k_sweeps_manifest_HPC/
 runs/slow_budget_maps_30k_manifest_HPC/
@@ -28,10 +30,10 @@ The script writes the preprint analysis panels to `papers/preprint/figures/` in 
 
 ## Citation
 
-Zenodo DOI: forthcoming.
+Zenodo dataset DOI: https://doi.org/10.5281/zenodo.22976539
 
-Until the DOI is available, please cite the GitHub commit used for code and state that the simulation outputs correspond to the forthcoming Zenodo archive for:
+Please cite the GitHub commit used for code and cite the archived simulation outputs as:
 
 ```text
-Musacchio F, Fuhrmann M. Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks. bioRxiv, forthcoming.
+Musacchio, F. (2026). Simulation data for inhibitory budget matching in competitive STDP networks [Dataset]. Zenodo. https://doi.org/10.5281/zenodo.22976539
 ```
