@@ -59,7 +59,7 @@ REPRESENTATIVE_SLOW_RUN = COMPARE_MATCHED_DIR / "slow_homeostat_unconstrained_in
 REPRESENTATIVE_NORMALIZED_RUN = COMPARE_MATCHED_DIR / "normalized_slow_homeostat_input2_wAiAe10_thetaPlus0p05_seed0"
 FAILED_VOGELS_LOW_RUN = COMPARE_MATCHED_DIR / "vogels_stable_input2_wAiAe10_thetaPlus0p05_seed2"
 FAILED_MISMATCHED_BUDGET_RUN = COMPARE_BAD_BUDGET_DIR / "normalized_slow_homeostat_input2_wAiAe10_thetaPlus0p05_seed0"
-FAILED_SLOW_SATURATION_RUN = ROOT_DIR / "runs" / "bernstein_followup" / "20260915_143245" / "poster_multiseed" / "slow_homeostat_unconstrained_seed0"
+FAILED_SLOW_SATURATION_RUN = SLOW_MAP_DIR / "slow_eta0p001_r0hz0p03_seed2"
 # %% GLOBAL PLOT SETTINGS
 CM_TO_INCH  = 1.0 / 2.54
 PANEL_DPI   = 300
