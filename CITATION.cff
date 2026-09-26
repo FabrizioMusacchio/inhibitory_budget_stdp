@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite the archived software version and the associated preprint once available."
+title: "Inhibitory Budget STDP: code for budget-constrained inhibitory plasticity in competitive STDP networks"
+version: 0.0.1
+date-released: 2026-09-26
+
+authors:
+  - family-names: Musacchio
+    given-names: Fabrizio
+    orcid: https://orcid.org/0000-0002-9043-3349
+  - family-names: Fuhrmann
+    given-names: Martin
+
+repository-code: https://github.com/FabrizioMusacchio/inhibitory_budget_stdp
+license: GPL-3.0-or-later
+abstract: "Euler-integrated competitive STDP network simulations for studying fixed, Vogels-style, slow-homeostatic, and budget-constrained inhibitory plasticity on MNIST."
+
+keywords:
+  - spiking neural networks
+  - STDP
+  - inhibitory plasticity
+  - homeostatic plasticity
+  - computational neuroscience
+  - MNIST
+  - unsupervised learning
+  - synaptic plasticity
+  - stability analysis
+  - Python
+  - Numba
+
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Musacchio
+      given-names: Fabrizio
+      orcid: https://orcid.org/0000-0002-9043-3349
+    - family-names: Fuhrmann
+      given-names: Martin
+  title: "Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks"
+  year: 2026
+  journal: bioRxiv
+  publisher: Cold Spring Harbor Laboratory
+  notes: "Preprint DOI forthcoming."
