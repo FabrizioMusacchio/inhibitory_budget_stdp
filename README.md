@@ -1,232 +1,149 @@
-# SNN STDP MNIST
+# Budget-constrained inhibitory plasticity in competitive STDP networks
 
-This repository contains an Euler-based Diehl-Cook MNIST implementation together with switchable inhibitory plasticity variants in `Euler_stdp_MNIST_iSTDP.py`.
+This repository contains an Euler-integrated competitive spiking neural network (SNN) for MNIST, based on the [Diehl-Cook architecture](https://doi.org/10.3389/fncom.2015.00099) and extended with several inhibitory plasticity rules.
+
+In this study, we asked when fixed lateral inhibition can be replaced by adaptive inhibitory synapses without destroying the competitive operating regime that supports unsupervised representation learning. The main simulation script supports fixed inhibition, a Vogels-style inhibitory STDP rule, a slow homeostatic inhibitory rule, and a budget-constrained slow homeostatic rule that conserves the total inhibitory input to each excitatory neuron.
+
+Large run outputs and manuscript files are not stored in this GitHub repository. The datasets needed to reproduce the preprint analyses are stored in a separate Zenodo archive (see below; also see [runs/README.md](runs/README.md).
+
+Repository Layout:
+
+```text
+Euler_stdp_MNIST_iSTDP.py          Main simulator and plotting diagnostics
+run_baseline_regime_sweep.py       Fixed-inhibition and matched-rule sweep runner
+run_inhibitory_plasticity_maps.py  Vogels-style and inhibitory-plasticity map runner
+additional_scripts/                Analysis and preprint figure-generation scripts
+hpc/                               Docker/Singularity and SLURM helper scripts
+runs/README.md                     Description of the external Zenodo data package
+```
 
 ## Setup
-
-The currently used Conda environment was created with:
+Create a Python environment with the packages used for local runs and plotting:
 
 ```bash
 conda create -n diehl_cook_euler python=3.12 mamba -y
 conda activate diehl_cook_euler
-mamba install numpy matplotlib numba scikit-learn tensorflow ipykernel -y
+mamba install numpy matplotlib pandas numba scikit-learn tensorflow ipykernel -y
 ```
 
-If `matplotlib` warns about a non-writable config directory, run experiments with a writable `MPLCONFIGDIR`, for example:
+TensorFlow is used only as a convenient local MNIST loader. On HPC systems we usually provide `mnist.npz` directly and use the lighter container environment described in [hpc/README.md](hpc/README.md).
+
+If Matplotlib reports a non-writable configuration directory (for instance on HPC systems), set `MPLCONFIGDIR` to a writable location:
 
 ```bash
 MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python Euler_stdp_MNIST_iSTDP.py --help
 ```
 
-The iSTDP variant also includes a safeguard against endless resampling/retry loops:
+## Minimal test run
+The command below performs a short fixed-inhibition run and writes its outputs to `runs_smoke/`:
 
 ```bash
---max-spike-retries-per-example 25
+MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python Euler_stdp_MNIST_iSTDP.py \
+  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
+  --out-dir runs_smoke/fixed \
+  --epochs 1 \
+  --train-examples 100 \
+  --test-examples 50 \
+  --inhibition-mode fixed \
+  --plot-every 0 \
+  --weight-stats-every 0 \
+  --metrics-window 50 \
+  --seed 0
 ```
 
-## Experimental Safety Controls
-
-The current inhibitory plasticity runner supports additional safeguards for debugging and parameter sweeps:
+## Main model options
+The simulator exposes the inhibitory mechanisms used in our study through:
 
 ```bash
---no-istdp-during-rest
---rollback-state-on-retry
+--inhibition-mode fixed
+--inhibition-mode istdp --istdp-rule vogels
+--inhibition-mode istdp --istdp-rule slow_homeostat
+--inhibition-mode istdp --istdp-rule normalized_slow_homeostat
+```
+
+Useful sweep and safety options include:
+
+```bash
+--input-intensity 2.0
+--w-aiae 10.0
+--eta-ie 0.0003
+--rho-ie 0.03
+--slow-homeostat-target-rate-hz 0.03
+--aiae-target-sum 3990
+--aiae-normalize-every 1
+--metrics-window 500
+--max-spike-retries-per-example 25
 --abort-runaway-spike-threshold 5000
 --abort-runaway-consecutive-examples 20
 --abort-theta-mean-threshold 200
 --abort-aiae-max-fraction-threshold 0.2
 ```
 
-When an early-abort criterion is triggered, the run writes:
+When an early-abort criterion is triggered, the run writes `logs/run_summary.json` and `ABORTED_RUN_NOTES.md` inside the run directory.
 
-- `logs/run_summary.json`
-- `ABORTED_RUN_NOTES.md`
-
-## Inhibitory Plasticity Rules
-
-`Euler_stdp_MNIST_iSTDP.py` now supports the following `Ai->Ae` plasticity rules:
-
-- `--istdp-rule vogels`
-- `--istdp-rule centered`
-- `--istdp-rule slow_homeostat`
-- `--istdp-rule theta_gated`
-- `--istdp-rule normalized_slow_homeostat`
-
-Useful rule-specific parameters:
-
-```bash
---theta-gate-ref-mv 20.0
---theta-gate-scale-mv 10.0
---slow-homeostat-target-rate-hz 0.1
---normalize-aiae-columns
---aiae-target-sum 7980
---aiae-normalize-every 1
-```
-
-## Reproducible iSTDP Runs
-
-The two larger comparison runs were planned with the following commands:
-
-```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python Euler_stdp_MNIST_iSTDP.py \
-  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --epochs 1 --train-examples 5000 --test-examples 1000 \
-  --update-interval 500 --weight-stats-every 500 --plot-every 0 \
-  --max-spike-retries-per-example 25 \
-  --no-istdp-during-rest \
-  --rollback-state-on-retry \
-  --no-record-spikes \
-  --out-dir ./runs/fixed_seed0 \
-  --inhibition-mode fixed
-```
-
-```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python Euler_stdp_MNIST_iSTDP.py \
-  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --epochs 1 --train-examples 5000 --test-examples 1000 \
-  --update-interval 500 --weight-stats-every 500 --plot-every 0 \
-  --max-spike-retries-per-example 25 \
-  --no-istdp-during-rest \
-  --rollback-state-on-retry \
-  --no-record-spikes \
-  --out-dir ./runs/istdp_seed0 \
-  --inhibition-mode istdp
-```
-
-## Vogels iSTDP Sweep
-
-To run a small parameter sweep over `eta_ie`, `rho_ie`, and `w_ie_max` with automatic CSV aggregation:
-
-```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python sweep_vogels_istdp.py \
-  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --train-examples 3000 \
-  --test-examples 500 \
-  --metrics-window 250 \
-  --plot-every 0
-```
-
-The sweep writes one subdirectory per run plus a combined summary CSV in the generated sweep folder.
-
-## Rule Variant Sweep
-
-To compare multiple `Ai->Ae` rules at matched settings:
-
-```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python sweep_istdp_rule_variants.py \
-  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --eta-values 3e-4 \
-  --rho-values 0.01,0.03 \
-  --wmax-values 25 \
-  --train-examples 3000 \
-  --test-examples 500 \
-  --metrics-window 250 \
-  --plot-every 0
-```
-
-This writes one run directory per rule/parameter combination plus a combined `sweep_summary.csv`.
-
-## Bernstein Follow-up Runs
-
-The accepted Bernstein abstract is supported by the proof-of-concept runs in
-`runs/focused_normalized_slow_homeostat_v2_20260630`. Do not overwrite those
-folders. For follow-up evidence, use the additive runner below; it writes only
-to a new timestamped folder under `runs/bernstein_followup/`.
-
-Run the multi-seed poster conditions:
-
-```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python run_bernstein_followup.py \
-  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --run-set poster_multiseed \
-  --seeds 0,1,2,3,4 \
-  --train-examples 3000 \
-  --test-examples 500 \
-  --metrics-window 250 \
-  --plot-every 0
-```
-
-This runs five conditions for each seed:
-
-- `fixed`
-- `vogels_stable`: `eta_ie=3e-4`, `rho_ie=0.01`, `w_ie_max=25`
-- `vogels_unstable`: `eta_ie=3e-4`, `rho_ie=0.03`, `w_ie_max=25`
-- `slow_homeostat_unconstrained`: `eta_ie=3e-4`, `rho_ie=0.03`, `w_ie_max=25`
-- `normalized_slow_homeostat`: `eta_ie=3e-4`, `rho_ie=0.03`, `w_ie_max=25`, column-normalized `AiAe`
-
-Run the focused Vogels stability map:
-
-```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python run_bernstein_followup.py \
-  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --run-set vogels_stability_map \
-  --seeds 0,1,2,3,4 \
-  --map-eta-values 1e-5,3e-5,1e-4,3e-4,1e-3 \
-  --map-rho-values 0.01,0.03,0.1,0.3 \
-  --map-wmax-values 25 \
-  --train-examples 3000 \
-  --test-examples 500 \
-  --metrics-window 250 \
-  --plot-every 0
-```
-
-Both commands write:
-
-- `combined_summary.csv`
-- `<run_set>/summary.csv`
-- one timestamped subdirectory per individual run
-
-If a long run is interrupted, restart it by reusing the printed run id:
-
-```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python run_bernstein_followup.py \
-  --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --run-set poster_multiseed \
-  --seeds 0,1,2,3,4 \
-  --run-id YYYYMMDD_HHMMSS \
-  --resume
-```
-
-## Baseline Regime Diagnosis
-
-Before interpreting seed-dependent iSTDP failures, first find a fixed-inhibition
-regime that is stable across seeds. This additive runner writes only to
-`runs/baseline_regime_sweep/`.
-
-Run the fixed-inhibition stability grid:
+## Reproducing main sweeps
+The primary fixed-inhibition grid and matched-rule comparisons are generated with:
 
 ```bash
 MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python run_baseline_regime_sweep.py \
   --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
   --run-set fixed_grid \
+  --out-base-dir runs/baseline_regime_sweep \
+  --run-id fixed_grid_30k_1ep \
+  --epochs 1 \
+  --train-examples 30000 \
+  --test-examples 5000 \
+  --plot-every 0 \
+  --weight-stats-every 5000 \
+  --metrics-window 500 \
   --seeds 0,1,2,3,4 \
-  --input-intensities 0.5,1.0,1.5,2.0 \
-  --w-aiae-values 10,15,20,25 \
-  --w-aeai-values 10.4 \
-  --theta-plus-values 0.05 \
-  --train-examples 3000 \
-  --test-examples 500 \
-  --metrics-window 250 \
-  --plot-every 0
+  --resume
 ```
 
-After a stable fixed regime is identified, rerun the rule comparison at that
-regime by replacing the three `--compare-*` values:
+Matched and mismatched budget comparisons use the same runner with `--run-set compare_regime` and the appropriate `--aiae-target-sum`.
+
+The Vogels-style parameter map is generated with:
 
 ```bash
-MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python run_baseline_regime_sweep.py \
+MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python run_inhibitory_plasticity_maps.py \
   --mnist-npz-path "$HOME/.keras/datasets/mnist.npz" \
-  --run-set compare_regime \
+  --run-set vogels_stability_map \
+  --out-base-dir runs/inhibitory_plasticity_maps \
+  --run-id vogels_stability_map_30k_1ep \
+  --epochs 1 \
+  --train-examples 30000 \
+  --test-examples 5000 \
+  --plot-every 0 \
+  --weight-stats-every 5000 \
+  --metrics-window 500 \
   --seeds 0,1,2,3,4 \
-  --compare-input-intensity 1.0 \
-  --compare-w-aiae 20.0 \
-  --compare-w-aeai 10.4 \
-  --compare-theta-plus-mV 0.05 \
-  --train-examples 3000 \
-  --test-examples 500 \
-  --metrics-window 250 \
-  --plot-every 0
+  --resume
 ```
 
-The script also supports `--run-id YYYYMMDD_HHMMSS --resume` for interrupted
-runs.
+For full 30k-example sweeps, the manifest-based SLURM workflow in [hpc/README.md](hpc/README.md) is preferred over running all jobs serially.
+
+## Recreating preprint figures
+After downloading the Zenodo data package, place the following folders under `runs/`:
+
+```text
+runs/long_30k_sweeps_manifest_HPC/
+runs/slow_budget_maps_30k_manifest_HPC/
+runs/long_visualization_60k_2ep/
+```
+
+Then regenerate the analysis panels with:
+
+```bash
+MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python additional_scripts/preprint_generate_figures.py
+```
+
+The figure script writes panels to `papers/preprint/figures/` in your local working copy. .
+
+## Citation
+If you use this code before the preprint DOI is available, please cite the GitHub repository with the commit hash you used:
+
+```text
+Musacchio F, Fuhrmann M. Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks. bioRxiv, forthcoming.
+```
+
+The simulation data required to reproduce the preprint figures will be deposited on Zenodo. DOI: forthcoming.
