@@ -6,11 +6,23 @@ See here for a detailed list of changes made in each release of the
 
 Each release can be archived on Zenodo for long-term preservation and citation purposes.
 
-<!-- ---
+<!-- 
+---
 
 ## 🔜 Inhibitory_Budget_STDP v0.0.2 UPCOMING RELEASE
 
--->
+Unreleased
+ -->
+
+---
+
+## 🔜 Inhibitory_Budget_STDP v0.0.2 UPCOMING RELEASE
+
+Unreleased
+
+### 📚 Documentation
+
+- Added the published Zenodo data archive for the simulation outputs required to reproduce the preprint analyses: https://doi.org/10.5281/zenodo.22976539.
 
 ---
 
@@ -59,4 +71,3 @@ This is the first public release of the *Inhibitory Budget STDP* project. The re
 
 - This release contains the code and workflow required to reproduce the simulation analyses, but not the large simulation outputs themselves.
 - The preprint figure-generation workflow expects the Zenodo data package to be restored under `runs/`.
-- Zenodo DOI and bioRxiv DOI are marked as forthcoming in this release and should be updated once available.
