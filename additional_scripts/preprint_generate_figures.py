@@ -35,6 +35,7 @@ mpl.rcParams["font.family"] = "Arial"
 ROOT_DIR = Path(__file__).resolve().parents[1]
 PREPRINT_DIR = ROOT_DIR / "papers" / "preprint"
 FIGURES_DIR = PREPRINT_DIR / "figures"
+CORRELATION_FIGURE_DIR = FIGURES_DIR / "figureS_correlations"
 AFFINITY_SAFE_PDFS = {
     ("figure1", "panel_l.pdf"),
     ("figure2", "panel_c.pdf"),
@@ -127,6 +128,21 @@ METHOD_RUN_PATTERNS = {
     "vogels_unstable": "vogels_unstable_input2_wAiAe10_thetaPlus0p05_seed*",
     "slow_homeostat_unconstrained": "slow_homeostat_unconstrained_input2_wAiAe10_thetaPlus0p05_seed*",
     "normalized_slow_homeostat": "normalized_slow_homeostat_input2_wAiAe10_thetaPlus0p05_seed*"}
+
+CORRELATION_METHODS = [
+    "fixed",
+    "vogels_stable",
+    "vogels_unstable",
+    "slow_homeostat_unconstrained",
+    "normalized_slow_homeostat",
+]
+CORRELATION_METHOD_SHORT_LABELS = {
+    "fixed": "fixed",
+    "vogels_stable": r"Vogels low $\rho$",
+    "vogels_unstable": r"Vogels high $\rho$",
+    "slow_homeostat_unconstrained": "slow-homeostatic",
+    "normalized_slow_homeostat": "budget-constrained",
+}
 # %% CLASSES AND PANEL FUNCTION
 @dataclass(frozen=True)
 class PanelConfig:
@@ -835,10 +851,8 @@ def to_float(value: object) -> float | None:
     except ValueError:
         return None
 
-
 def to_bool(value: object) -> bool:
     return str(value).strip().lower() == "true"
-
 
 def mean(values: Iterable[float | None]) -> float | None:
     vals = [float(v) for v in values if v is not None and math.isfinite(float(v))]
@@ -846,20 +860,17 @@ def mean(values: Iterable[float | None]) -> float | None:
         return None
     return float(np.mean(vals))
 
-
 def std(values: Iterable[float | None]) -> float:
     vals = [float(v) for v in values if v is not None and math.isfinite(float(v))]
     if len(vals) <= 1:
         return 0.0
     return float(np.std(vals, ddof=1))
 
-
 def sem(values: Iterable[float | None]) -> float:
     vals = [float(v) for v in values if v is not None and math.isfinite(float(v))]
     if len(vals) <= 1:
         return 0.0
     return float(np.std(vals, ddof=1) / math.sqrt(len(vals)))
-
 
 def read_summary(path: Path) -> list[dict[str, object]]:
     numeric_columns = {
@@ -881,10 +892,8 @@ def read_summary(path: Path) -> list[dict[str, object]]:
             rows.append(row)
     return rows
 
-
 def read_hpc_summary() -> list[dict[str, object]]:
     return read_summary(HPC_SWEEP_SUMMARY)
-
 
 def read_run_directory_summaries(run_root: Path, *, block: str, run_set: str) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
@@ -925,7 +934,6 @@ def read_run_directory_summaries(run_root: Path, *, block: str, run_set: str) ->
         rows.append(row)
     return rows
 
-
 def hpc_rows(*, block: str | None = None, run_set: str | None = None) -> list[dict[str, object]]:
     rows = read_hpc_summary()
     if block is not None:
@@ -934,31 +942,24 @@ def hpc_rows(*, block: str | None = None, run_set: str | None = None) -> list[di
         rows = [r for r in rows if r.get("run_set") == run_set]
     return rows
 
-
 def fixed_grid_rows() -> list[dict[str, object]]:
     return hpc_rows(block="fixed_grid", run_set="fixed_grid")
-
 
 def compare_rows(*, budget: str) -> list[dict[str, object]]:
     block = "compare_matched" if budget == "matched" else "compare_mismatched"
     return hpc_rows(block=block, run_set="compare_regime")
 
-
 def vogels_map_rows() -> list[dict[str, object]]:
     return hpc_rows(block="vogels_map", run_set="vogels_stability_map")
-
 
 def slow_map_rows() -> list[dict[str, object]]:
     return read_run_directory_summaries(SLOW_MAP_DIR, block="slow_map", run_set="slow_homeostat_map")
 
-
 def budget_map_rows() -> list[dict[str, object]]:
     return read_run_directory_summaries(BUDGET_MAP_DIR, block="budget_map", run_set="normalized_slow_homeostat_budget_map")
 
-
 def unique_sorted(rows: list[dict[str, object]], key: str) -> list[float]:
     return sorted({float(r[key]) for r in rows if r.get(key) is not None})
-
 
 def heatmap_table(
     rows: list[dict[str, object]],
@@ -975,7 +976,6 @@ def heatmap_table(
             if subset:
                 table[yi, xi] = value_fn(subset)
     return y_values, x_values, table
-
 
 def apply_panel_style(ax: plt.Axes, cfg: PanelConfig) -> None:
     title = cfg.title
@@ -1004,7 +1004,6 @@ def apply_panel_style(ax: plt.Axes, cfg: PanelConfig) -> None:
     if cfg.legend_show:
         ax.legend(frameon=False, fontsize=LEGEND_FONTSIZE, loc=cfg.legend_loc)
 
-
 def save_panel(fig: plt.Figure, cfg: PanelConfig) -> None:
     out_dir = FIGURES_DIR / cfg.output_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1018,7 +1017,6 @@ def save_panel(fig: plt.Figure, cfg: PanelConfig) -> None:
         else: 
             fig.savefig(out_path, dpi=PANEL_DPI, bbox_inches="tight")
     plt.close(fig)
-
 
 def rewrite_pdf_for_affinity(pdf_path: Path) -> None:
     """Rewrite rare Matplotlib PDFs that trigger Affinity's PDF importer."""
@@ -1045,13 +1043,11 @@ def rewrite_pdf_for_affinity(pdf_path: Path) -> None:
             tmp_path.unlink()
         print(f"Could not rewrite {pdf_path.name} for Affinity: {exc}")
 
-
 def panel_xtick_labels(cfg: PanelConfig, labels: Iterable[str]) -> list[str]:
     labels = list(labels)
     if cfg.xtick_linebreaks:
         return labels
     return [label.replace("\n", " ") for label in labels]
-
 
 def make_panel(cfg: PanelConfig, draw: Callable[[plt.Axes], None]) -> None:
     fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
@@ -1059,7 +1055,6 @@ def make_panel(cfg: PanelConfig, draw: Callable[[plt.Axes], None]) -> None:
     apply_panel_style(ax, cfg)
     fig.tight_layout(pad=0.6)
     save_panel(fig, cfg)
-
 
 def draw_heatmap(
     ax: plt.Axes,
@@ -1098,14 +1093,12 @@ def draw_heatmap(
     cbar.set_label(cbar_label, fontsize=LABEL_FONTSIZE)
     cbar.outline.set_linewidth(0)
 
-
 def format_examples_k(value: float) -> str:
     if value >= 29500:
         return "30k"
     if value >= 1000:
         return f"{value / 1000:.1f}k".replace(".0k", "k")
     return f"{value:.0f}"
-
 
 def format_heatmap_value(value: float) -> str:
     abs_value = abs(value)
@@ -1119,10 +1112,8 @@ def format_heatmap_value(value: float) -> str:
         return f"{value:.2g}"
     return f"{value:.2g}"
 
-
 def run_dirs(pattern: str) -> list[Path]:
     return sorted(p for p in COMPARE_MATCHED_DIR.glob(pattern) if p.is_dir())
-
 
 def completed_method_run_dirs(condition: str) -> list[Path]:
     rows = compare_rows(budget="matched")
@@ -1139,7 +1130,6 @@ def completed_method_run_dirs(condition: str) -> list[Path]:
                 break
     return sorted(dirs)
 
-
 def rolling_mean(values: np.ndarray, window: int = 100) -> tuple[np.ndarray, np.ndarray]:
     values = np.asarray(values, dtype=float)
     if values.size == 0:
@@ -1151,7 +1141,6 @@ def rolling_mean(values: np.ndarray, window: int = 100) -> tuple[np.ndarray, np.
     xs = np.arange(window - 1, values.size)
     return xs, smoothed
 
-
 def inhibitory_weights_offdiag(run_dir: Path) -> np.ndarray:
     weights = np.load(run_dir / "snapshots" / "W_AiAe_ep0.npy").astype(float)
     if weights.shape[0] == weights.shape[1]:
@@ -1159,11 +1148,9 @@ def inhibitory_weights_offdiag(run_dir: Path) -> np.ndarray:
         return weights[mask]
     return weights.ravel()
 
-
 def inhibitory_column_sums(run_dir: Path) -> np.ndarray:
     weights = np.load(run_dir / "snapshots" / "W_AiAe_ep0.npy").astype(float)
     return weights.sum(axis=0)
-
 
 def draw_receptive_fields_from_run(ax: plt.Axes, run_dir: Path) -> None:
     weights = np.load(run_dir / "snapshots" / "W_XeAe_ep0.npy")
@@ -1180,10 +1167,8 @@ def draw_receptive_fields_from_run(ax: plt.Axes, run_dir: Path) -> None:
     ax.imshow(canvas, cmap="gray_r", interpolation="nearest")
     ax.set_axis_off()
 
-
 def color_to_cmap(name: str, color: str) -> mcolors.LinearSegmentedColormap:
     return mcolors.LinearSegmentedColormap.from_list(name, ["#ffffff", color])
-
 
 def draw_confusion_from_run(ax: plt.Axes, run_dir: Path, *, color: str = BLUE) -> None:
     matrix_path = run_dir / "logs" / "confusion_matrix_ep0.npy"
@@ -1220,7 +1205,6 @@ def draw_confusion_from_run(ax: plt.Axes, run_dir: Path, *, color: str = BLUE) -
     ax.spines["bottom"].set_visible(False)
     ax.spines["left"].set_visible(False)
 
-
 def draw_window_metric(
     ax: plt.Axes,
     paths: list[Path],
@@ -1246,7 +1230,6 @@ def draw_window_metric(
         std_y = y_stack.std(axis=0)
         ax.plot(x_mean, mean_y, color=color, alpha=0.85, linewidth=1.25, label=label or "mean")
         ax.fill_between(x_mean, mean_y - std_y, mean_y + std_y, color=color, alpha=0.08, linewidth=0)
-
 
 def draw_rolling_npy_metric(
     ax: plt.Axes,
@@ -1276,7 +1259,6 @@ def draw_rolling_npy_metric(
         ax.plot(x_mean, mean_y, color=color, alpha=0.85, linewidth=1.2, label=label or "mean")
         ax.fill_between(x_mean, mean_y - std_y, mean_y + std_y, color=color, alpha=0.08, linewidth=0)
 
-
 def draw_rolling_npy_metric_mean_only(
     ax: plt.Axes,
     dirs: list[Path],
@@ -1303,7 +1285,6 @@ def draw_rolling_npy_metric_mean_only(
         mean_y = y_stack.mean(axis=0)
         ax.plot(x_mean, mean_y, color=color, alpha=0.70, linewidth=1.2, linestyle=linestyle, label=label)
 
-
 def draw_method_diagnostic_panels(
     *,
     prefix: str,
@@ -1321,7 +1302,6 @@ def draw_method_diagnostic_panels(
     make_panel(PREPRINT_PANELS[f"{prefix}_entropy"], lambda ax: draw_window_metric(ax, metric_paths, "usage_entropy_norm", color=color))
     make_panel(PREPRINT_PANELS[f"{prefix}_spikes"], lambda ax: draw_rolling_npy_metric(ax, dirs, "train_sum_spk_ep0.npy", color=color, window=100))
     make_panel(PREPRINT_PANELS[f"{prefix}_gi"], lambda ax: draw_rolling_npy_metric(ax, dirs, "train_mean_gi_ep0.npy", color=color, window=100))
-
 
 def figure1_learning_overview() -> None:
     cfg = PREPRINT_PANELS["representative_receptive_fields"]
@@ -1353,7 +1333,6 @@ def figure1_learning_overview() -> None:
 
     cfg = PREPRINT_PANELS["fixed_gi_dynamics"]
     make_panel(cfg, lambda ax: draw_rolling_npy_metric(ax, fixed_dirs, "train_mean_gi_ep0.npy", color=METHOD_COLORS["fixed"], label="mean", window=100))
-
 
 def figure2_baseline_grid() -> None:
     rows = fixed_grid_rows()
@@ -1392,7 +1371,6 @@ def figure2_baseline_grid() -> None:
         ax.set_xlabel("replicate", fontsize=7)
 
     make_panel(cfg, draw_best)
-
 
 def figure3_budget_comparison() -> None:
     bad = compare_rows(budget="mismatched")
@@ -1513,7 +1491,6 @@ def figure3_budget_comparison() -> None:
 
     make_panel(cfg, draw_all_weights)
 
-
 def figure4_mechanistic_diagnostics() -> None:
     stable_fixed = REPRESENTATIVE_FIXED_RUN
     stable_budget = REPRESENTATIVE_NORMALIZED_RUN
@@ -1619,7 +1596,6 @@ def figure4_mechanistic_diagnostics() -> None:
 
     make_panel(cfg, draw_column_sums)
 
-
 def figure_s1_budget_evidence() -> None:
     fixed_rows = [r for r in fixed_grid_rows() if r["input_intensity"] == 2.0]
     bad = [r for r in compare_rows(budget="mismatched") if r["condition"] == "normalized_slow_homeostat"]
@@ -1689,7 +1665,6 @@ def figure_s1_budget_evidence() -> None:
 
     make_panel(cfg, draw_normalized_weight)
 
-
 def figure_supplement_method_diagnostics() -> None:
     draw_method_diagnostic_panels(
         prefix="supp_vogels",
@@ -1720,7 +1695,6 @@ def figure_supplement_method_diagnostics() -> None:
         condition="normalized_slow_homeostat",
     )
 
-
 def draw_two_run_trajectory(
     ax: plt.Axes,
     *,
@@ -1745,13 +1719,11 @@ def draw_two_run_trajectory(
     if log_y:
         ax.set_yscale("log")
 
-
 def read_run_summary(run_dir: Path) -> dict[str, object]:
     path = run_dir / "logs" / "run_summary.json"
     if not path.exists():
         return {}
     return json.loads(path.read_text())
-
 
 def format_summary_value(value: object, digits: int = 3) -> str:
     if value is None:
@@ -1765,7 +1737,6 @@ def format_summary_value(value: object, digits: int = 3) -> str:
     if digits <= 0:
         return f"{int(round(value_f))}"
     return f"{value_f:.{digits}g}"
-
 
 def draw_two_run_window_metric(
     ax: plt.Axes,
@@ -1795,7 +1766,6 @@ def draw_two_run_window_metric(
     if log_y:
         ax.set_yscale("log")
 
-
 def draw_multi_run_window_metric(
     ax: plt.Axes,
     *,
@@ -1816,7 +1786,6 @@ def draw_multi_run_window_metric(
     if log_y:
         ax.set_yscale("log")
 
-
 def draw_multi_run_trajectory(
     ax: plt.Axes,
     *,
@@ -1833,7 +1802,6 @@ def draw_multi_run_trajectory(
         ax.plot(xs, ys, color=color, linestyle=linestyle, linewidth=1.1, label=label)
     if log_y:
         ax.set_yscale("log")
-
 
 def draw_failure_summary(
     ax: plt.Axes,
@@ -1874,7 +1842,6 @@ def draw_failure_summary(
         color="#222222",
         linespacing=1.25,
     )
-
 
 def draw_method_failure_panels(
     *,
@@ -1957,7 +1924,6 @@ def draw_method_failure_panels(
         ),
     )
 
-
 def draw_vogels_failure_panels() -> None:
     low_bad = FAILED_VOGELS_LOW_RUN
     low_good = REPRESENTATIVE_VOGELS_RUN
@@ -1994,7 +1960,6 @@ def draw_vogels_failure_panels() -> None:
         lambda ax: draw_multi_run_trajectory(ax, runs=trajectory_runs, filename="train_mean_gi_ep0.npy"),
     )
 
-
 def figure_supplement_failure_diagnostics() -> None:
     draw_vogels_failure_panels()
     draw_method_failure_panels(
@@ -2015,7 +1980,6 @@ def figure_supplement_failure_diagnostics() -> None:
         bad_color=RED,
         good_color=GREEN,
     )
-
 
 def figure4_vogels_map() -> None:
     rows = vogels_map_rows()
@@ -2047,7 +2011,6 @@ def figure4_vogels_map() -> None:
         ax.set_xticklabels(["stable", "aborted"], fontsize=6)
 
     make_panel(cfg, draw_outcomes)
-
 
 def figure_slow_budget_maps() -> None:
     slow_rows = slow_map_rows()
@@ -2088,7 +2051,6 @@ def figure_slow_budget_maps() -> None:
         make_panel(cfg, lambda ax: draw_heatmap(ax, y, x, stability, vmin=0, vmax=1, cmap=cfg.cmap or CMAP_STABILITY, cbar_label="stable fraction"))
         cfg = PREPRINT_PANELS["budget_processed_map"]
         make_panel(cfg, lambda ax: draw_heatmap(ax, y, x, processed, vmin=0, vmax=30000, cmap=cfg.cmap or CMAP_PROCESSED, cbar_label="training examples", value_formatter=format_examples_k))
-
 
 def figure_s5_training_budget_justification() -> None:
     run_dir = LONG_FIXED_RUN
@@ -2153,6 +2115,568 @@ def figure_s5_training_budget_justification() -> None:
 
     make_panel(cfg, draw_weight_change)
 
+# %% SUPPLEMENT CANDIDATE: WEIGHT-CORRELATION DIAGNOSTICS
+def latest_snapshot(run_dir: Path, stem: str) -> Path:
+    paths = sorted(run_dir.glob(f"snapshots/{stem}_ep*.npy"))
+    if not paths:
+        raise FileNotFoundError(f"No {stem} snapshot found in {run_dir}")
+    return paths[-1]
+
+def method_completed_dirs_for_correlations(condition: str) -> list[Path]:
+    dirs = completed_method_run_dirs(condition)
+    if dirs:
+        return dirs
+    return run_dirs(METHOD_RUN_PATTERNS[condition])
+
+def representative_dir_for_condition(condition: str) -> Path:
+    preferred = {
+        "fixed": REPRESENTATIVE_FIXED_RUN,
+        "vogels_stable": REPRESENTATIVE_VOGELS_RUN,
+        "vogels_unstable": REPRESENTATIVE_VOGELS_HIGH_RHO_RUN,
+        "slow_homeostat_unconstrained": REPRESENTATIVE_SLOW_RUN,
+        "normalized_slow_homeostat": REPRESENTATIVE_NORMALIZED_RUN,
+    }[condition]
+    if preferred.exists():
+        return preferred
+    dirs = method_completed_dirs_for_correlations(condition)
+    if not dirs:
+        raise FileNotFoundError(f"No run directory found for {condition}")
+    return dirs[0]
+
+def sort_order_from_assignments(run_dir: Path, n_units: int) -> np.ndarray:
+    assignments_path = run_dir / "logs" / "assignments_ep0.npy"
+    if not assignments_path.exists():
+        return np.arange(n_units)
+    assignments = np.load(assignments_path)
+    if assignments.size != n_units:
+        return np.arange(n_units)
+    counts_path = run_dir / "logs" / "train_per_neuron_spike_counts_ep0.npy"
+    if counts_path.exists():
+        counts = np.load(counts_path)
+        if counts.size == n_units:
+            return np.lexsort((-counts, assignments))
+    return np.argsort(assignments, kind="stable")
+
+def column_correlation_matrix(
+    matrix: np.ndarray,
+    *,
+    neutralize_diagonal: bool = False,
+) -> np.ndarray:
+    """Correlate neuron-specific weight columns.
+
+    For square inhibitory matrices, the diagonal contains excluded self-pairs.
+    Replacing those entries by the column mean removes this structural zero
+    before estimating the correlation between inhibitory input profiles.
+    """
+    data = np.asarray(matrix, dtype=float).copy()
+    if neutralize_diagonal and data.shape[0] == data.shape[1]:
+        np.fill_diagonal(data, np.nan)
+        col_mean = np.nanmean(data, axis=0)
+        diag = np.arange(data.shape[0])
+        data[diag, diag] = col_mean
+
+    mean_vec = data.mean(axis=0, keepdims=True)
+    centered = data - mean_vec
+    std_vec = centered.std(axis=0, ddof=1)
+    variable = std_vec > 1e-12
+
+    z = np.zeros_like(centered, dtype=float)
+    z[:, variable] = centered[:, variable] / std_vec[variable]
+    denom = max(data.shape[0] - 1, 1)
+    corr = (z.T @ z) / denom
+    corr = np.clip(corr, -1.0, 1.0)
+
+    if np.any(~variable):
+        corr[~variable, :] = np.nan
+        corr[:, ~variable] = np.nan
+        const_idx = np.where(~variable)[0]
+        for i in const_idx:
+            for j in const_idx:
+                if np.allclose(data[:, i], data[:, j], rtol=0.0, atol=1e-9):
+                    corr[i, j] = 1.0
+    np.fill_diagonal(corr, 1.0)
+    return corr
+
+def upper_triangle_values(corr: np.ndarray) -> np.ndarray:
+    idx = np.triu_indices_from(corr, k=1)
+    vals = corr[idx]
+    return vals[np.isfinite(vals)]
+
+def sampled_values(values: np.ndarray, *, max_values: int = 250_000, seed: int = 1) -> np.ndarray:
+    if values.size <= max_values:
+        return values
+    rng = np.random.default_rng(seed)
+    return rng.choice(values, size=max_values, replace=False)
+
+def weight_correlation_values_for_method(condition: str, weight_name: str) -> np.ndarray:
+    dirs = method_completed_dirs_for_correlations(condition)
+    all_values: list[np.ndarray] = []
+    for run_dir in dirs:
+        weights = np.load(latest_snapshot(run_dir, weight_name))
+        corr = column_correlation_matrix(weights, neutralize_diagonal=(weight_name == "W_AiAe"))
+        values = upper_triangle_values(corr)
+        if values.size:
+            all_values.append(values)
+    if not all_values:
+        return np.asarray([], dtype=float)
+    return np.concatenate(all_values)
+
+def save_correlation_figure(fig: plt.Figure, stem: str) -> None:
+    CORRELATION_FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    for ext in (".pdf", ".png"):
+        fig.savefig(CORRELATION_FIGURE_DIR / f"{stem}{ext}", dpi=PANEL_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+def draw_weight_correlation_distribution(weight_name: str, title: str, out_stem: str) -> dict[str, dict[str, float]]:
+    fig, ax = plt.subplots(figsize=(8.4 * CM_TO_INCH, 5.0 * CM_TO_INCH))
+    bins = np.linspace(-0.35, 1.0, 95)
+    stats: dict[str, dict[str, float]] = {}
+    for idx, condition in enumerate(CORRELATION_METHODS):
+        values = weight_correlation_values_for_method(condition, weight_name)
+        values = sampled_values(values, seed=100 + idx)
+        if values.size == 0:
+            continue
+        color = METHOD_COLORS[condition]
+        if float(np.std(values)) < 1e-8:
+            ax.axvline(
+                float(np.median(values)),
+                color=color,
+                linewidth=1.5,
+                linestyle="-",
+                label=CORRELATION_METHOD_SHORT_LABELS[condition],
+                alpha=0.95,
+            )
+        else:
+            counts, edges = np.histogram(values, bins=bins, density=True)
+            centers = 0.5 * (edges[:-1] + edges[1:])
+            ax.plot(
+                centers,
+                counts,
+                color=color,
+                linewidth=1.25,
+                label=CORRELATION_METHOD_SHORT_LABELS[condition],
+                alpha=0.95,
+            )
+            ax.fill_between(centers, 0, counts, color=color, alpha=0.08, linewidth=0)
+        stats[condition] = {
+            "n_pairwise_correlations": float(values.size),
+            "median": float(np.median(values)),
+            "q25": float(np.percentile(values, 25)),
+            "q75": float(np.percentile(values, 75)),
+            "mean": float(np.mean(values)),
+            "std": float(np.std(values)),
+        }
+    ax.set_title(title, fontsize=FONTSIZE, pad=5)
+    ax.set_xlabel("pairwise Pearson correlation", fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel("density", fontsize=LABEL_FONTSIZE)
+    ax.set_xlim(-0.35, 1.0)
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.6)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(labelsize=TICK_FONTSIZE, length=2.5, width=0.8)
+    ax.legend(frameon=False, fontsize=LEGEND_FONTSIZE, loc="upper left")
+    fig.tight_layout(pad=0.6)
+    save_correlation_figure(fig, out_stem)
+    return stats
+
+def draw_weight_correlation_heatmap(condition: str, weight_name: str, out_stem: str) -> dict[str, float]:
+    run_dir = representative_dir_for_condition(condition)
+    weights = np.load(latest_snapshot(run_dir, weight_name))
+    corr = column_correlation_matrix(weights, neutralize_diagonal=(weight_name == "W_AiAe"))
+    order = sort_order_from_assignments(run_dir, corr.shape[0])
+    corr_ordered = corr[np.ix_(order, order)]
+    values = upper_triangle_values(corr)
+
+    fig, ax = plt.subplots(figsize=(5.4 * CM_TO_INCH, 5.0 * CM_TO_INCH))
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "weight_corr",
+        ["#44546a", "#f7f7f4", METHOD_COLORS[condition]],
+    )
+    im = ax.imshow(corr_ordered, vmin=-0.25, vmax=1.0, cmap=cmap, interpolation="nearest")
+    symbol = r"$W^{XE}$" if weight_name == "W_XeAe" else r"$W^{IE}$"
+    ax.set_title(
+        f"{CORRELATION_METHOD_SHORT_LABELS[condition]}\n{symbol} column correlations",
+        fontsize=FONTSIZE,
+        pad=5,
+    )
+    ax.set_xlabel("sorted E neurons", fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel("sorted E neurons", fontsize=LABEL_FONTSIZE)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.035)
+    cbar.set_label("correlation", fontsize=LABEL_FONTSIZE)
+    cbar.ax.tick_params(labelsize=TICK_FONTSIZE, length=2)
+    cbar.outline.set_linewidth(0)
+    fig.tight_layout(pad=0.6)
+    save_correlation_figure(fig, out_stem)
+
+    return {
+        "median": float(np.median(values)) if values.size else float("nan"),
+        "q25": float(np.percentile(values, 25)) if values.size else float("nan"),
+        "q75": float(np.percentile(values, 75)) if values.size else float("nan"),
+        "mean": float(np.mean(values)) if values.size else float("nan"),
+        "std": float(np.std(values)) if values.size else float("nan"),
+    }
+
+def run_label_masks(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    valid = labels >= 0
+    same = labels[:, None] == labels[None, :]
+    upper = np.triu(np.ones((labels.size, labels.size), dtype=bool), k=1)
+    valid_pair = valid[:, None] & valid[None, :] & upper
+    return valid_pair & same, valid_pair & ~same
+
+def pearson_or_nan(x: np.ndarray, y: np.ndarray) -> float:
+    valid = np.isfinite(x) & np.isfinite(y)
+    x = x[valid]
+    y = y[valid]
+    if x.size < 3 or float(np.std(x)) < 1e-12 or float(np.std(y)) < 1e-12:
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
+
+def silhouette_from_correlation(corr: np.ndarray, labels: np.ndarray) -> float:
+    valid_labels = sorted(int(x) for x in np.unique(labels[labels >= 0]))
+    if len(valid_labels) < 2:
+        return float("nan")
+    dist = 1.0 - np.asarray(corr, dtype=float)
+    np.fill_diagonal(dist, 0.0)
+    scores: list[float] = []
+    for i, label in enumerate(labels):
+        if label < 0:
+            continue
+        same_idx = np.where(labels == label)[0]
+        same_idx = same_idx[same_idx != i]
+        if same_idx.size == 0:
+            continue
+        a_i = float(np.nanmean(dist[i, same_idx]))
+        b_candidates = []
+        for other_label in valid_labels:
+            if other_label == int(label):
+                continue
+            other_idx = np.where(labels == other_label)[0]
+            if other_idx.size:
+                b_candidates.append(float(np.nanmean(dist[i, other_idx])))
+        if not b_candidates:
+            continue
+        b_i = min(b_candidates)
+        denom = max(a_i, b_i)
+        scores.append(0.0 if denom < 1e-12 else (b_i - a_i) / denom)
+    if not scores:
+        return float("nan")
+    return float(np.mean(scores))
+
+def within_by_digit(corr: np.ndarray, labels: np.ndarray) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for digit in range(10):
+        idx = np.where(labels == digit)[0]
+        if idx.size < 2:
+            out[str(digit)] = float("nan")
+            continue
+        sub = corr[np.ix_(idx, idx)]
+        values = upper_triangle_values(sub)
+        out[str(digit)] = float(np.median(values)) if values.size else float("nan")
+    return out
+
+def run_weight_correlation_metrics(run_dir: Path) -> dict[str, object]:
+    w_x = np.load(latest_snapshot(run_dir, "W_XeAe"))
+    w_i = np.load(latest_snapshot(run_dir, "W_AiAe"))
+    corr_x = column_correlation_matrix(w_x, neutralize_diagonal=False)
+    corr_i = column_correlation_matrix(w_i, neutralize_diagonal=True)
+    assignments_path = run_dir / "logs" / "assignments_ep0.npy"
+    labels = np.load(assignments_path).astype(int) if assignments_path.exists() else np.full(corr_i.shape[0], -1, dtype=int)
+    if labels.size != corr_i.shape[0]:
+        labels = np.full(corr_i.shape[0], -1, dtype=int)
+
+    within_mask, between_mask = run_label_masks(labels)
+    within_i = corr_i[within_mask]
+    between_i = corr_i[between_mask]
+    upper = np.triu_indices_from(corr_i, k=1)
+    coupling = pearson_or_nan(corr_x[upper], corr_i[upper])
+    within_median = float(np.nanmedian(within_i)) if within_i.size else float("nan")
+    between_median = float(np.nanmedian(between_i)) if between_i.size else float("nan")
+
+    return {
+        "run_dir": str(run_dir),
+        "within_median": within_median,
+        "between_median": between_median,
+        "block_contrast": within_median - between_median,
+        "within_mean": float(np.nanmean(within_i)) if within_i.size else float("nan"),
+        "between_mean": float(np.nanmean(between_i)) if between_i.size else float("nan"),
+        "block_contrast_mean": (
+            float(np.nanmean(within_i) - np.nanmean(between_i))
+            if within_i.size and between_i.size else float("nan")
+        ),
+        "xe_ie_similarity_coupling": coupling,
+        "inhibitory_label_silhouette": silhouette_from_correlation(corr_i, labels),
+        "within_by_digit": within_by_digit(corr_i, labels),
+    }
+
+def method_label_structure_metrics() -> dict[str, list[dict[str, object]]]:
+    metrics: dict[str, list[dict[str, object]]] = {}
+    for condition in CORRELATION_METHODS:
+        metrics[condition] = [
+            run_weight_correlation_metrics(run_dir)
+            for run_dir in method_completed_dirs_for_correlations(condition)
+        ]
+    return metrics
+
+def finite_metric_values(metrics: dict[str, list[dict[str, object]]], condition: str, key: str) -> np.ndarray:
+    vals = [float(m[key]) for m in metrics.get(condition, []) if np.isfinite(float(m.get(key, float("nan"))))]
+    return np.asarray(vals, dtype=float)
+
+def correlation_xtick_labels() -> list[str]:
+    return [CORRELATION_METHOD_SHORT_LABELS[c] for c in CORRELATION_METHODS]
+
+def plot_metric_points(
+    ax: plt.Axes,
+    metrics: dict[str, list[dict[str, object]]],
+    key: str,
+    *,
+    ylabel: str,
+    title: str,
+    ylim: tuple[float, float] | None = None,
+) -> dict[str, dict[str, float]]:
+    stats: dict[str, dict[str, float]] = {}
+    for xi, condition in enumerate(CORRELATION_METHODS):
+        vals = finite_metric_values(metrics, condition, key)
+        if vals.size == 0:
+            continue
+        color = METHOD_COLORS[condition]
+        jitter = np.linspace(-0.075, 0.075, vals.size) if vals.size > 1 else np.asarray([0.0])
+        ax.scatter(np.full(vals.size, xi) + jitter, vals, color=color, s=9, zorder=3)
+        ax.errorbar(
+            xi,
+            float(np.mean(vals)),
+            yerr=float(np.std(vals, ddof=1) / math.sqrt(vals.size)) if vals.size > 1 else 0.0,
+            fmt="_",
+            color="black",
+            capsize=3,
+            markersize=10,
+            zorder=4,
+        )
+        stats[condition] = {
+            "n": float(vals.size),
+            "mean": float(np.mean(vals)),
+            "std": float(np.std(vals)),
+            "median": float(np.median(vals)),
+            "q25": float(np.percentile(vals, 25)),
+            "q75": float(np.percentile(vals, 75)),
+        }
+    ax.set_title(title, fontsize=FONTSIZE, pad=5)
+    ax.set_ylabel(ylabel, fontsize=LABEL_FONTSIZE)
+    ax.set_xticks(np.arange(len(CORRELATION_METHODS)))
+    ax.set_xticklabels(correlation_xtick_labels(), fontsize=6, rotation=35, ha="right")
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.6)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(labelsize=TICK_FONTSIZE, length=2.5, width=0.8)
+    return stats
+
+def draw_within_between_panel(metrics: dict[str, list[dict[str, object]]]) -> dict[str, dict[str, float]]:
+    fig, ax = plt.subplots(figsize=(8.4 * CM_TO_INCH, 5.0 * CM_TO_INCH))
+    stats: dict[str, dict[str, float]] = {}
+    for xi, condition in enumerate(CORRELATION_METHODS):
+        color = METHOD_COLORS[condition]
+        within = finite_metric_values(metrics, condition, "within_median")
+        between = finite_metric_values(metrics, condition, "between_median")
+        for offset, vals, marker, face, label in [
+            (-0.11, within, "o", color, "within label"),
+            (0.11, between, "s", color, "between labels"),
+        ]:
+            if vals.size == 0:
+                continue
+            jitter = np.linspace(-0.025, 0.025, vals.size) if vals.size > 1 else np.asarray([0.0])
+            ax.scatter(
+                np.full(vals.size, xi + offset) + jitter,
+                vals,
+                marker=marker,
+                facecolor=face,
+                edgecolor=color,
+                linewidth=0.8,
+                s=12,
+                zorder=3,
+                label=label if xi == 0 else None,
+            )
+            ax.errorbar(
+                xi + offset,
+                float(np.mean(vals)),
+                yerr=float(np.std(vals, ddof=1) / math.sqrt(vals.size)) if vals.size > 1 else 0.0,
+                fmt="_",
+                color="black",
+                capsize=2,
+                markersize=8,
+                zorder=4,
+            )
+        stats[condition] = {
+            "within_mean": float(np.mean(within)) if within.size else float("nan"),
+            "within_median": float(np.median(within)) if within.size else float("nan"),
+            "between_mean": float(np.mean(between)) if between.size else float("nan"),
+            "between_median": float(np.median(between)) if between.size else float("nan"),
+        }
+    ax.set_title(r"within- vs between-label $W^{IE}$ profile similarity", fontsize=FONTSIZE, pad=5)
+    ax.set_ylabel("median pairwise correlation", fontsize=LABEL_FONTSIZE)
+    ax.set_xticks(np.arange(len(CORRELATION_METHODS)))
+    ax.set_xticklabels(correlation_xtick_labels(), fontsize=6, rotation=35, ha="right")
+    ax.set_ylim(-0.16, 1.05)
+    ax.axhline(0, color=GRAY, linestyle="--", linewidth=0.8, zorder=1)
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.6)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.tick_params(labelsize=TICK_FONTSIZE, length=2.5, width=0.8)
+    ax.legend(frameon=False, fontsize=LEGEND_FONTSIZE, loc="upper right")
+    fig.tight_layout(pad=0.6)
+    save_correlation_figure(fig, "panel_c_W_AiAe_within_between_label_correlations")
+    return stats
+
+def draw_same_digit_similarity_heatmap(metrics: dict[str, list[dict[str, object]]]) -> dict[str, dict[str, float]]:
+    data = np.full((len(CORRELATION_METHODS), 10), np.nan, dtype=float)
+    stats: dict[str, dict[str, float]] = {}
+    for yi, condition in enumerate(CORRELATION_METHODS):
+        per_digit_values: dict[str, list[float]] = {str(d): [] for d in range(10)}
+        for run_metric in metrics.get(condition, []):
+            per_digit = run_metric.get("within_by_digit", {})
+            if not isinstance(per_digit, dict):
+                continue
+            for digit in range(10):
+                value = float(per_digit.get(str(digit), float("nan")))
+                if np.isfinite(value):
+                    per_digit_values[str(digit)].append(value)
+        for digit in range(10):
+            vals = per_digit_values[str(digit)]
+            if vals:
+                data[yi, digit] = float(np.mean(vals))
+        finite = data[yi, np.isfinite(data[yi])]
+        stats[condition] = {
+            "mean_across_digits": float(np.mean(finite)) if finite.size else float("nan"),
+            "std_across_digits": float(np.std(finite)) if finite.size else float("nan"),
+        }
+
+    fig, ax = plt.subplots(figsize=(8.6 * CM_TO_INCH, 4.6 * CM_TO_INCH))
+    cmap = mcolors.LinearSegmentedColormap.from_list("digit_similarity", ["#44546a", "#f7f7f4", "#5f8b66"])
+    im = ax.imshow(data, vmin=-0.15, vmax=1.0, cmap=cmap, aspect="auto")
+    ax.set_title(r"same-label $W^{IE}$ profile similarity by digit", fontsize=FONTSIZE, pad=5)
+    ax.set_xlabel("assigned digit", fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel("method", fontsize=LABEL_FONTSIZE)
+    ax.set_xticks(np.arange(10))
+    ax.set_xticklabels([str(d) for d in range(10)], fontsize=TICK_FONTSIZE)
+    ax.set_yticks(np.arange(len(CORRELATION_METHODS)))
+    ax.set_yticklabels([CORRELATION_METHOD_SHORT_LABELS[c] for c in CORRELATION_METHODS], fontsize=6)
+    for yi in range(data.shape[0]):
+        for xi in range(data.shape[1]):
+            value = data[yi, xi]
+            if np.isfinite(value):
+                ax.text(xi, yi, f"{value:.2f}", ha="center", va="center", fontsize=4.6,
+                        color="white" if value > 0.55 or value < -0.1 else "black")
+    cbar = fig.colorbar(im, ax=ax, fraction=0.028, pad=0.025)
+    cbar.set_label("within-label corr.", fontsize=LABEL_FONTSIZE)
+    cbar.ax.tick_params(labelsize=TICK_FONTSIZE, length=2)
+    cbar.outline.set_linewidth(0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    fig.tight_layout(pad=0.6)
+    save_correlation_figure(fig, "panel_d_W_AiAe_same_digit_similarity_heatmap")
+    return stats
+
+def draw_label_structure_metric_panels(metrics: dict[str, list[dict[str, object]]]) -> dict[str, object]:
+    output: dict[str, object] = {}
+
+    output["within_between"] = draw_within_between_panel(metrics)
+    output["same_digit_similarity"] = draw_same_digit_similarity_heatmap(metrics)
+
+    fig, ax = plt.subplots(figsize=(7.4 * CM_TO_INCH, 4.7 * CM_TO_INCH))
+    output["block_contrast"] = plot_metric_points(
+        ax,
+        metrics,
+        "block_contrast",
+        ylabel="within - between corr.",
+        title=r"$W^{IE}$ label-block contrast",
+        ylim=(-0.05, 0.48),
+    )
+    fig.tight_layout(pad=0.6)
+    save_correlation_figure(fig, "panel_e_W_AiAe_label_block_contrast")
+
+    fig, ax = plt.subplots(figsize=(7.4 * CM_TO_INCH, 4.7 * CM_TO_INCH))
+    output["xe_ie_similarity_coupling"] = plot_metric_points(
+        ax,
+        metrics,
+        "xe_ie_similarity_coupling",
+        ylabel=r"corr($W^{XE}$ sim., $W^{IE}$ sim.)",
+        title=r"feedforward-inhibitory similarity coupling",
+        ylim=(-0.2, 0.8),
+    )
+    fig.tight_layout(pad=0.6)
+    save_correlation_figure(fig, "panel_f_W_XeAe_W_AiAe_similarity_coupling")
+
+    fig, ax = plt.subplots(figsize=(7.4 * CM_TO_INCH, 4.7 * CM_TO_INCH))
+    output["inhibitory_label_silhouette"] = plot_metric_points(
+        ax,
+        metrics,
+        "inhibitory_label_silhouette",
+        ylabel="silhouette-like score",
+        title=r"$W^{IE}$ label-cluster index",
+        ylim=(-0.1, 0.45),
+    )
+    fig.tight_layout(pad=0.6)
+    save_correlation_figure(fig, "panel_g_W_AiAe_label_silhouette")
+
+    return output
+
+def figure_weight_correlation_diagnostics() -> None:
+    """Export candidate panels for pairwise weight-correlation diagnostics."""
+    summary: dict[str, object] = {
+        "description": (
+            "Pairwise Pearson correlations among excitatory-neuron weight columns. "
+            "W_XeAe columns are feedforward receptive-field vectors. W_AiAe columns "
+            "are inhibitory input profiles onto excitatory neurons; structural diagonal "
+            "self-pair zeros are neutralized before correlation."
+        ),
+        "distributions": {},
+        "representative_heatmaps": {},
+        "label_structure": {},
+    }
+
+    summary["distributions"]["W_XeAe"] = draw_weight_correlation_distribution(
+        "W_XeAe",
+        r"feedforward weight correlations ($W^{XE}$)",
+        "panel_a_W_XeAe_pairwise_correlation_distributions",
+    )
+    summary["distributions"]["W_AiAe"] = draw_weight_correlation_distribution(
+        "W_AiAe",
+        r"inhibitory profile correlations ($W^{IE}$)",
+        "panel_b_W_AiAe_pairwise_correlation_distributions",
+    )
+
+    for condition in CORRELATION_METHODS:
+        label = condition.replace("_", "-")
+        summary["representative_heatmaps"][condition] = {
+            "W_XeAe": draw_weight_correlation_heatmap(
+                condition,
+                "W_XeAe",
+                f"panel_W_XeAe_correlation_heatmap_{label}",
+            ),
+            "W_AiAe": draw_weight_correlation_heatmap(
+                condition,
+                "W_AiAe",
+                f"panel_W_AiAe_correlation_heatmap_{label}",
+            ),
+        }
+
+    label_metrics = method_label_structure_metrics()
+    summary["label_structure"] = {
+        "per_run": label_metrics,
+        "panels": draw_label_structure_metric_panels(label_metrics),
+    }
+
+    CORRELATION_FIGURE_DIR.mkdir(parents=True, exist_ok=True)
+    (CORRELATION_FIGURE_DIR / "correlation_summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True)
+    )
 # %% MAIN
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -2178,6 +2702,9 @@ def main() -> None:
     
     # SI figure 1:
     figure_s5_training_budget_justification()
+    
+    # Candidate SI panels for follow-up inspection:
+    figure_weight_correlation_diagnostics()
     print(f"Figures written to {FIGURES_DIR}")
 # %% MAIN ENTRY POINT
 if __name__ == "__main__":
