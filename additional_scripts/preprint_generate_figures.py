@@ -658,10 +658,12 @@ PREPRINT_PANELS: dict[str, PanelConfig] = {
         "figure6",
         "panel_d.pdf",
         r"final inhibitory budget per excitatory neuron",
-        figsize_cm=(8.0, 4.4),
+        figsize_cm=(8.0, 5.4),
         ylabel=r"column sum $\sum_i w^{IE}_{ij}$",
         ylim=(0,8250), # ylim=(3800, 8250),
         grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
     ),
     # -------------------------------
     # FIGURE 6: Budget-constrained inhibition
@@ -839,6 +841,119 @@ PREPRINT_PANELS: dict[str, PanelConfig] = {
                                          ylabel="summary value", 
                                          grid_axis="y"),
 }
+
+# -------------------------------
+# CANDIDATE SI-FIGURE: weight-correlation diagnostics
+# -------------------------------
+CORRELATION_DISTRIBUTION_SIZE = (8.4, 5.0)
+CORRELATION_HEATMAP_SIZE      = (5.4, 5.0)
+CORRELATION_METRIC_SIZE       = (4.9, 5.4)
+CORRELATION_WIDE_METRIC_SIZE  = (7.9, 5.4)
+
+CORRELATION_PANELS: dict[str, PanelConfig] = {
+    "corr_W_XeAe_distribution": panel(
+        "figureS_correlations",
+        "panel_a_W_XeAe_pairwise_correlation_distributions.pdf",
+        r"feedforward weight correlations ($W^{XE}$)",
+        figsize_cm=CORRELATION_DISTRIBUTION_SIZE,
+        xlabel="pairwise Pearson correlation",
+        ylabel="density",
+        xlim=(-0.35, 1.0),
+        legend_show=True,
+        legend_loc="upper left",
+        grid_axis="y",
+    ),
+    "corr_W_AiAe_distribution": panel(
+        "figureS_correlations",
+        "panel_b_W_AiAe_pairwise_correlation_distributions.pdf",
+        r"inhibitory profile correlations ($W^{IE}$)",
+        figsize_cm=CORRELATION_DISTRIBUTION_SIZE,
+        xlabel="pairwise Pearson correlation",
+        ylabel="density",
+        xlim=(-0.35, 1.0),
+        legend_show=True,
+        legend_loc="upper left",
+        grid_axis="y",
+    ),
+    "corr_within_between": panel(
+        "figureS_correlations",
+        "panel_c_W_AiAe_within_between_label_correlations.pdf",
+        r"within- vs between-label $W^{IE}$ profile similarity",
+        figsize_cm=CORRELATION_WIDE_METRIC_SIZE,
+        ylabel="median pairwise correlation",
+        ylim=(-0.16, 1.05),
+        legend_show=True,
+        legend_loc="upper right",
+        grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
+    ),
+    "corr_same_digit_similarity": panel(
+        "figureS_correlations",
+        "panel_d_W_AiAe_same_digit_similarity_heatmap.pdf",
+        r"same-label $W^{IE}$ profile similarity by digit",
+        figsize_cm=(8.6, 4.6),
+        xlabel="assigned digit",
+        ylabel="method",
+        cmap=mcolors.LinearSegmentedColormap.from_list(
+            "digit_similarity", ["#44546a", "#f7f7f4", "#5f8b66"]
+        ),
+        grid_axis=None,
+        spines=NO_SPINES,
+    ),
+    "corr_block_contrast": panel(
+        "figureS_correlations",
+        "panel_e_W_AiAe_label_block_contrast.pdf",
+        r"$W^{IE}$ label-block contrast",
+        figsize_cm=CORRELATION_METRIC_SIZE,
+        ylabel="within - between corr.",
+        ylim=(-0.05, 0.48),
+        grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
+    ),
+    "corr_similarity_coupling": panel(
+        "figureS_correlations",
+        "panel_f_W_XeAe_W_AiAe_similarity_coupling.pdf",
+        "feedforward-inhibitory similarity coupling",
+        figsize_cm=CORRELATION_METRIC_SIZE,
+        ylabel=r"corr($W^{XE}$ sim., $W^{IE}$ sim.)",
+        ylim=(-0.2, 0.8),
+        grid_axis="y",
+        xrotation=35,
+        xlim=(-0.5,3.5),
+        xtick_linebreaks=False,
+    ),
+    "corr_label_silhouette": panel(
+        "figureS_correlations",
+        "panel_g_W_AiAe_label_silhouette.pdf",
+        r"$W^{IE}$ label-cluster index",
+        figsize_cm=CORRELATION_METRIC_SIZE,
+        ylabel="silhouette-like score",
+        ylim=(-0.1, 0.45),
+        grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
+    ),
+}
+
+for _weight_name in ("W_XeAe", "W_AiAe"):
+    _symbol = r"$W^{XE}$" if _weight_name == "W_XeAe" else r"$W^{IE}$"
+    for _condition in CORRELATION_METHODS:
+        CORRELATION_PANELS[f"corr_{_weight_name}_heatmap_{_condition}"] = panel(
+            "figureS_correlations",
+            f"heatmap_{_weight_name}_{_condition}.pdf",
+            f"{CORRELATION_METHOD_SHORT_LABELS[_condition]}\n{_symbol} column correlations",
+            figsize_cm=CORRELATION_HEATMAP_SIZE,
+            xlabel="sorted E neurons",
+            ylabel="sorted E neurons",
+            cmap=mcolors.LinearSegmentedColormap.from_list(
+                f"weight_corr_{_weight_name}_{_condition}",
+                ["#44546a", "#f7f7f4", METHOD_COLORS[_condition]],
+            ),
+            grid_axis=None,
+            spines=NO_SPINES,
+        )
 # %% CORE HELPER FUNCTIONS
 def to_float(value: object) -> float | None:
     if value is None:
@@ -1012,7 +1127,7 @@ def save_panel(fig: plt.Figure, cfg: PanelConfig) -> None:
         out_path = out_dir / f"{stem}{ext}"
         if ext == ".pdf":
             fig.savefig(out_path, dpi=PANEL_DPI, bbox_inches="tight", transparent=True)
-            if (cfg.output_subdir, cfg.output_name) in AFFINITY_SAFE_PDFS:
+            if (cfg.output_subdir, cfg.output_name) in AFFINITY_SAFE_PDFS or cfg.output_subdir == "figureS_correlations":
                 rewrite_pdf_for_affinity(out_path)
         else: 
             fig.savefig(out_path, dpi=PANEL_DPI, bbox_inches="tight")
@@ -1592,7 +1707,8 @@ def figure4_mechanistic_diagnostics() -> None:
         ax.text(5.35, 3990, r"$B_I=3990$", fontsize=5.5, color=GREEN, va="bottom", ha="right")
         ax.text(5.35, 7980, r"$B_I=7980$", fontsize=5.5, color=RED, va="bottom", ha="right")
         ax.set_xticks(np.arange(len(weight_runs)))
-        ax.set_xticklabels(["fixed", "Vogels\nlow", "Vogels\nhigh", "slow-\nhomeostatic", "budget\nmatched", "budget\nmismatched"], fontsize=6)
+        labels = ["fixed", "Vogels\nlow", "Vogels\nhigh", "slow-\nhomeostatic", "budget\nmatched", "budget\nmismatched"]
+        ax.set_xticklabels(panel_xtick_labels(cfg, labels), fontsize=6)
 
     make_panel(cfg, draw_column_sums)
 
@@ -2227,8 +2343,8 @@ def save_correlation_figure(fig: plt.Figure, stem: str) -> None:
         fig.savefig(CORRELATION_FIGURE_DIR / f"{stem}{ext}", dpi=PANEL_DPI, bbox_inches="tight")
     plt.close(fig)
 
-def draw_weight_correlation_distribution(weight_name: str, title: str, out_stem: str) -> dict[str, dict[str, float]]:
-    fig, ax = plt.subplots(figsize=(8.4 * CM_TO_INCH, 5.0 * CM_TO_INCH))
+def draw_weight_correlation_distribution(weight_name: str, cfg: PanelConfig) -> dict[str, dict[str, float]]:
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
     bins = np.linspace(-0.35, 1.0, 95)
     stats: dict[str, dict[str, float]] = {}
     for idx, condition in enumerate(CORRELATION_METHODS):
@@ -2266,21 +2382,12 @@ def draw_weight_correlation_distribution(weight_name: str, title: str, out_stem:
             "mean": float(np.mean(values)),
             "std": float(np.std(values)),
         }
-    ax.set_title(title, fontsize=FONTSIZE, pad=5)
-    ax.set_xlabel("pairwise Pearson correlation", fontsize=LABEL_FONTSIZE)
-    ax.set_ylabel("density", fontsize=LABEL_FONTSIZE)
-    ax.set_xlim(-0.35, 1.0)
-    ax.set_axisbelow(True)
-    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.6)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.tick_params(labelsize=TICK_FONTSIZE, length=2.5, width=0.8)
-    ax.legend(frameon=False, fontsize=LEGEND_FONTSIZE, loc="upper left")
+    apply_panel_style(ax, cfg)
     fig.tight_layout(pad=0.6)
-    save_correlation_figure(fig, out_stem)
+    save_panel(fig, cfg)
     return stats
 
-def draw_weight_correlation_heatmap(condition: str, weight_name: str, out_stem: str) -> dict[str, float]:
+def draw_weight_correlation_heatmap(condition: str, weight_name: str, cfg: PanelConfig) -> dict[str, float]:
     run_dir = representative_dir_for_condition(condition)
     weights = np.load(latest_snapshot(run_dir, weight_name))
     corr = column_correlation_matrix(weights, neutralize_diagonal=(weight_name == "W_AiAe"))
@@ -2288,30 +2395,21 @@ def draw_weight_correlation_heatmap(condition: str, weight_name: str, out_stem: 
     corr_ordered = corr[np.ix_(order, order)]
     values = upper_triangle_values(corr)
 
-    fig, ax = plt.subplots(figsize=(5.4 * CM_TO_INCH, 5.0 * CM_TO_INCH))
-    cmap = mcolors.LinearSegmentedColormap.from_list(
-        "weight_corr",
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
+    cmap = cfg.cmap or mcolors.LinearSegmentedColormap.from_list(
+        f"weight_corr_{weight_name}_{condition}",
         ["#44546a", "#f7f7f4", METHOD_COLORS[condition]],
     )
     im = ax.imshow(corr_ordered, vmin=-0.25, vmax=1.0, cmap=cmap, interpolation="nearest")
-    symbol = r"$W^{XE}$" if weight_name == "W_XeAe" else r"$W^{IE}$"
-    ax.set_title(
-        f"{CORRELATION_METHOD_SHORT_LABELS[condition]}\n{symbol} column correlations",
-        fontsize=FONTSIZE,
-        pad=5,
-    )
-    ax.set_xlabel("sorted E neurons", fontsize=LABEL_FONTSIZE)
-    ax.set_ylabel("sorted E neurons", fontsize=LABEL_FONTSIZE)
     ax.set_xticks([])
     ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.035)
     cbar.set_label("correlation", fontsize=LABEL_FONTSIZE)
     cbar.ax.tick_params(labelsize=TICK_FONTSIZE, length=2)
     cbar.outline.set_linewidth(0)
+    apply_panel_style(ax, cfg)
     fig.tight_layout(pad=0.6)
-    save_correlation_figure(fig, out_stem)
+    save_panel(fig, cfg)
 
     return {
         "median": float(np.median(values)) if values.size else float("nan"),
@@ -2434,12 +2532,12 @@ def plot_metric_points(
     metrics: dict[str, list[dict[str, object]]],
     key: str,
     *,
-    ylabel: str,
-    title: str,
-    ylim: tuple[float, float] | None = None,
+    cfg: PanelConfig,
+    conditions: list[str] | None = None,
 ) -> dict[str, dict[str, float]]:
+    plot_conditions = conditions or CORRELATION_METHODS
     stats: dict[str, dict[str, float]] = {}
-    for xi, condition in enumerate(CORRELATION_METHODS):
+    for xi, condition in enumerate(plot_conditions):
         vals = finite_metric_values(metrics, condition, key)
         if vals.size == 0:
             continue
@@ -2464,21 +2562,15 @@ def plot_metric_points(
             "q25": float(np.percentile(vals, 25)),
             "q75": float(np.percentile(vals, 75)),
         }
-    ax.set_title(title, fontsize=FONTSIZE, pad=5)
-    ax.set_ylabel(ylabel, fontsize=LABEL_FONTSIZE)
-    ax.set_xticks(np.arange(len(CORRELATION_METHODS)))
-    ax.set_xticklabels(correlation_xtick_labels(), fontsize=6, rotation=35, ha="right")
-    if ylim is not None:
-        ax.set_ylim(*ylim)
-    ax.set_axisbelow(True)
-    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.6)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.tick_params(labelsize=TICK_FONTSIZE, length=2.5, width=0.8)
+    ax.set_xticks(np.arange(len(plot_conditions)))
+    labels = [CORRELATION_METHOD_SHORT_LABELS[c] for c in plot_conditions]
+    ax.set_xticklabels(panel_xtick_labels(cfg, labels), fontsize=6)
+    apply_panel_style(ax, cfg)
     return stats
 
 def draw_within_between_panel(metrics: dict[str, list[dict[str, object]]]) -> dict[str, dict[str, float]]:
-    fig, ax = plt.subplots(figsize=(8.4 * CM_TO_INCH, 5.0 * CM_TO_INCH))
+    cfg = CORRELATION_PANELS["corr_within_between"]
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
     stats: dict[str, dict[str, float]] = {}
     for xi, condition in enumerate(CORRELATION_METHODS):
         color = METHOD_COLORS[condition]
@@ -2518,23 +2610,16 @@ def draw_within_between_panel(metrics: dict[str, list[dict[str, object]]]) -> di
             "between_mean": float(np.mean(between)) if between.size else float("nan"),
             "between_median": float(np.median(between)) if between.size else float("nan"),
         }
-    ax.set_title(r"within- vs between-label $W^{IE}$ profile similarity", fontsize=FONTSIZE, pad=5)
-    ax.set_ylabel("median pairwise correlation", fontsize=LABEL_FONTSIZE)
     ax.set_xticks(np.arange(len(CORRELATION_METHODS)))
-    ax.set_xticklabels(correlation_xtick_labels(), fontsize=6, rotation=35, ha="right")
-    ax.set_ylim(-0.16, 1.05)
+    ax.set_xticklabels(panel_xtick_labels(cfg, correlation_xtick_labels()), fontsize=6)
     ax.axhline(0, color=GRAY, linestyle="--", linewidth=0.8, zorder=1)
-    ax.set_axisbelow(True)
-    ax.grid(axis="y", color=LIGHT_GRAY, linewidth=0.6)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.tick_params(labelsize=TICK_FONTSIZE, length=2.5, width=0.8)
-    ax.legend(frameon=False, fontsize=LEGEND_FONTSIZE, loc="upper right")
+    apply_panel_style(ax, cfg)
     fig.tight_layout(pad=0.6)
-    save_correlation_figure(fig, "panel_c_W_AiAe_within_between_label_correlations")
+    save_panel(fig, cfg)
     return stats
 
 def draw_same_digit_similarity_heatmap(metrics: dict[str, list[dict[str, object]]]) -> dict[str, dict[str, float]]:
+    cfg = CORRELATION_PANELS["corr_same_digit_similarity"]
     data = np.full((len(CORRELATION_METHODS), 10), np.nan, dtype=float)
     stats: dict[str, dict[str, float]] = {}
     for yi, condition in enumerate(CORRELATION_METHODS):
@@ -2557,12 +2642,9 @@ def draw_same_digit_similarity_heatmap(metrics: dict[str, list[dict[str, object]
             "std_across_digits": float(np.std(finite)) if finite.size else float("nan"),
         }
 
-    fig, ax = plt.subplots(figsize=(8.6 * CM_TO_INCH, 4.6 * CM_TO_INCH))
-    cmap = mcolors.LinearSegmentedColormap.from_list("digit_similarity", ["#44546a", "#f7f7f4", "#5f8b66"])
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
+    cmap = cfg.cmap or mcolors.LinearSegmentedColormap.from_list("digit_similarity", ["#44546a", "#f7f7f4", "#5f8b66"])
     im = ax.imshow(data, vmin=-0.15, vmax=1.0, cmap=cmap, aspect="auto")
-    ax.set_title(r"same-label $W^{IE}$ profile similarity by digit", fontsize=FONTSIZE, pad=5)
-    ax.set_xlabel("assigned digit", fontsize=LABEL_FONTSIZE)
-    ax.set_ylabel("method", fontsize=LABEL_FONTSIZE)
     ax.set_xticks(np.arange(10))
     ax.set_xticklabels([str(d) for d in range(10)], fontsize=TICK_FONTSIZE)
     ax.set_yticks(np.arange(len(CORRELATION_METHODS)))
@@ -2577,10 +2659,9 @@ def draw_same_digit_similarity_heatmap(metrics: dict[str, list[dict[str, object]
     cbar.set_label("within-label corr.", fontsize=LABEL_FONTSIZE)
     cbar.ax.tick_params(labelsize=TICK_FONTSIZE, length=2)
     cbar.outline.set_linewidth(0)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
+    apply_panel_style(ax, cfg)
     fig.tight_layout(pad=0.6)
-    save_correlation_figure(fig, "panel_d_W_AiAe_same_digit_similarity_heatmap")
+    save_panel(fig, cfg)
     return stats
 
 def draw_label_structure_metric_panels(metrics: dict[str, list[dict[str, object]]]) -> dict[str, object]:
@@ -2589,41 +2670,39 @@ def draw_label_structure_metric_panels(metrics: dict[str, list[dict[str, object]
     output["within_between"] = draw_within_between_panel(metrics)
     output["same_digit_similarity"] = draw_same_digit_similarity_heatmap(metrics)
 
-    fig, ax = plt.subplots(figsize=(7.4 * CM_TO_INCH, 4.7 * CM_TO_INCH))
+    cfg = CORRELATION_PANELS["corr_block_contrast"]
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
     output["block_contrast"] = plot_metric_points(
         ax,
         metrics,
         "block_contrast",
-        ylabel="within - between corr.",
-        title=r"$W^{IE}$ label-block contrast",
-        ylim=(-0.05, 0.48),
+        cfg=cfg,
     )
     fig.tight_layout(pad=0.6)
-    save_correlation_figure(fig, "panel_e_W_AiAe_label_block_contrast")
+    save_panel(fig, cfg)
 
-    fig, ax = plt.subplots(figsize=(7.4 * CM_TO_INCH, 4.7 * CM_TO_INCH))
+    cfg = CORRELATION_PANELS["corr_similarity_coupling"]
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
     output["xe_ie_similarity_coupling"] = plot_metric_points(
         ax,
         metrics,
         "xe_ie_similarity_coupling",
-        ylabel=r"corr($W^{XE}$ sim., $W^{IE}$ sim.)",
-        title=r"feedforward-inhibitory similarity coupling",
-        ylim=(-0.2, 0.8),
+        cfg=cfg,
+        conditions=[c for c in CORRELATION_METHODS if c != "fixed"],
     )
     fig.tight_layout(pad=0.6)
-    save_correlation_figure(fig, "panel_f_W_XeAe_W_AiAe_similarity_coupling")
+    save_panel(fig, cfg)
 
-    fig, ax = plt.subplots(figsize=(7.4 * CM_TO_INCH, 4.7 * CM_TO_INCH))
+    cfg = CORRELATION_PANELS["corr_label_silhouette"]
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
     output["inhibitory_label_silhouette"] = plot_metric_points(
         ax,
         metrics,
         "inhibitory_label_silhouette",
-        ylabel="silhouette-like score",
-        title=r"$W^{IE}$ label-cluster index",
-        ylim=(-0.1, 0.45),
+        cfg=cfg,
     )
     fig.tight_layout(pad=0.6)
-    save_correlation_figure(fig, "panel_g_W_AiAe_label_silhouette")
+    save_panel(fig, cfg)
 
     return output
 
@@ -2643,13 +2722,11 @@ def figure_weight_correlation_diagnostics() -> None:
 
     summary["distributions"]["W_XeAe"] = draw_weight_correlation_distribution(
         "W_XeAe",
-        r"feedforward weight correlations ($W^{XE}$)",
-        "panel_a_W_XeAe_pairwise_correlation_distributions",
+        CORRELATION_PANELS["corr_W_XeAe_distribution"],
     )
     summary["distributions"]["W_AiAe"] = draw_weight_correlation_distribution(
         "W_AiAe",
-        r"inhibitory profile correlations ($W^{IE}$)",
-        "panel_b_W_AiAe_pairwise_correlation_distributions",
+        CORRELATION_PANELS["corr_W_AiAe_distribution"],
     )
 
     for condition in CORRELATION_METHODS:
@@ -2658,25 +2735,21 @@ def figure_weight_correlation_diagnostics() -> None:
             "W_XeAe": draw_weight_correlation_heatmap(
                 condition,
                 "W_XeAe",
-                f"panel_W_XeAe_correlation_heatmap_{label}",
+                CORRELATION_PANELS[f"corr_W_XeAe_heatmap_{condition}"],
             ),
             "W_AiAe": draw_weight_correlation_heatmap(
                 condition,
                 "W_AiAe",
-                f"panel_W_AiAe_correlation_heatmap_{label}",
+                CORRELATION_PANELS[f"corr_W_AiAe_heatmap_{condition}"],
             ),
         }
 
     label_metrics = method_label_structure_metrics()
-    summary["label_structure"] = {
-        "per_run": label_metrics,
-        "panels": draw_label_structure_metric_panels(label_metrics),
-    }
+    summary["label_structure"] = {"per_run": label_metrics,
+                                  "panels": draw_label_structure_metric_panels(label_metrics)}
 
     CORRELATION_FIGURE_DIR.mkdir(parents=True, exist_ok=True)
-    (CORRELATION_FIGURE_DIR / "correlation_summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True)
-    )
+    (CORRELATION_FIGURE_DIR / "correlation_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
 # %% MAIN
 def main() -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -2686,7 +2759,7 @@ def main() -> None:
     
     # figure 2 Vogels style:
     figure4_vogels_map()
-    figure_supplement_failure_diagnostics() # also fpr figure 4 and 6
+    figure_supplement_failure_diagnostics() # also for figure 4 and 6
     
     # figure 3:
     figure3_budget_comparison()
