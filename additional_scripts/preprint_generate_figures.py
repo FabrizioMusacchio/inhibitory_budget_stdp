@@ -649,7 +649,7 @@ PREPRINT_PANELS: dict[str, PanelConfig] = {
         "figure6",
         "panel_c.pdf",
         r"final $W^{IE}$ weight ranges",
-        figsize_cm=(8.0, 4.65),
+        figsize_cm=(7.0, 4.65),
         xlabel=r"inhibitory weight $w^{IE}_{ij}$",
         ylabel=None,
         grid_axis="x",
@@ -657,8 +657,8 @@ PREPRINT_PANELS: dict[str, PanelConfig] = {
     "mechanism_column_sums": panel(
         "figure6",
         "panel_d.pdf",
-        r"final inhibitory budget per excitatory neuron",
-        figsize_cm=(8.0, 5.4),
+        "final inhibitory budget\nper excitatory neuron",
+        figsize_cm=(5.0, 5.4),
         ylabel=r"column sum $\sum_i w^{IE}_{ij}$",
         ylim=(0,8250), # ylim=(3800, 8250),
         grid_axis="y",
@@ -845,44 +845,44 @@ PREPRINT_PANELS: dict[str, PanelConfig] = {
 # -------------------------------
 # CANDIDATE SI-FIGURE: weight-correlation diagnostics
 # -------------------------------
-CORRELATION_DISTRIBUTION_SIZE = (8.4, 5.0)
-CORRELATION_HEATMAP_SIZE      = (5.4, 5.0)
-CORRELATION_METRIC_SIZE       = (4.9, 5.4)
-CORRELATION_WIDE_METRIC_SIZE  = (7.9, 5.4)
+CORRELATION_DISTRIBUTION_SIZE = (5.0, 4.55)
+CORRELATION_HEATMAP_SIZE      = (5.45, 4.05)
+CORRELATION_METRIC_SIZE       = (5.0, 5.6)
+CORRELATION_WIDE_METRIC_SIZE  = (5.9, 5.6)
 
 CORRELATION_PANELS: dict[str, PanelConfig] = {
     "corr_W_XeAe_distribution": panel(
         "figureS_correlations",
         "panel_a_W_XeAe_pairwise_correlation_distributions.pdf",
-        r"feedforward weight correlations ($W^{XE}$)",
+        "feedforward weight\ncorrelations ($W^{XE}$)",
         figsize_cm=CORRELATION_DISTRIBUTION_SIZE,
         xlabel="pairwise Pearson correlation",
         ylabel="density",
         xlim=(-0.35, 1.0),
-        legend_show=True,
+        legend_show=False,
         legend_loc="upper left",
         grid_axis="y",
     ),
     "corr_W_AiAe_distribution": panel(
         "figureS_correlations",
         "panel_b_W_AiAe_pairwise_correlation_distributions.pdf",
-        r"inhibitory profile correlations ($W^{IE}$)",
+        "inhibitory profile\ncorrelations ($W^{IE}$)",
         figsize_cm=CORRELATION_DISTRIBUTION_SIZE,
         xlabel="pairwise Pearson correlation",
         ylabel="density",
-        xlim=(-0.35, 1.0),
-        legend_show=True,
-        legend_loc="upper left",
+        xlim=(-0.35, 1.025),
+        legend_show=False,
+        legend_loc="upper right",
         grid_axis="y",
     ),
     "corr_within_between": panel(
         "figureS_correlations",
         "panel_c_W_AiAe_within_between_label_correlations.pdf",
-        r"within- vs between-label $W^{IE}$ profile similarity",
+        "within- vs between-label\n$W^{IE}$ profile similarity",
         figsize_cm=CORRELATION_WIDE_METRIC_SIZE,
         ylabel="median pairwise correlation",
         ylim=(-0.16, 1.05),
-        legend_show=True,
+        legend_show=False,
         legend_loc="upper right",
         grid_axis="y",
         xrotation=35,
@@ -915,7 +915,7 @@ CORRELATION_PANELS: dict[str, PanelConfig] = {
     "corr_similarity_coupling": panel(
         "figureS_correlations",
         "panel_f_W_XeAe_W_AiAe_similarity_coupling.pdf",
-        "feedforward-inhibitory similarity coupling",
+        "feedforward-inhibitory\nsimilarity coupling",
         figsize_cm=CORRELATION_METRIC_SIZE,
         ylabel=r"corr($W^{XE}$ sim., $W^{IE}$ sim.)",
         ylim=(-0.2, 0.8),
