@@ -11,19 +11,18 @@ Large run outputs and manuscript files are not stored in this GitHub repository.
 
 Repository Layout:
 
-```text
-Euler_stdp_MNIST_iSTDP.py          Main simulator and plotting diagnostics
-run_baseline_regime_sweep.py       Fixed-inhibition and matched-rule sweep runner
-run_inhibitory_plasticity_maps.py  Vogels-style and inhibitory-plasticity map runner
-additional_scripts/                Analysis and preprint figure-generation scripts
-hpc/                               Docker/Singularity and SLURM helper scripts
-runs/README.md                     Description of the external Zenodo data package
+* `Euler_stdp_MNIST_iSTDP.py`: Main simulator and plotting diagnostics
+* `run_baseline_regime_sweep.py`: Fixed-inhibition and matched-rule sweep runner
+* `run_inhibitory_plasticity_maps.py`: Vogels-style and inhibitory-plasticity map runner
+* `additional_scripts/`: Analysis and preprint figure-generation scripts
+* `hpc/`: Docker/Singularity and SLURM helper scripts
+* `runs/README.md`: Description of the external Zenodo data package
 ```
 
 ## Setup
 Create a Python environment with the packages used for local runs and plotting:
 
-```bash
+```python
 conda create -n diehl_cook_euler python=3.12 mamba -y
 conda activate diehl_cook_euler
 mamba install numpy matplotlib pandas numba scikit-learn tensorflow ipykernel -y
