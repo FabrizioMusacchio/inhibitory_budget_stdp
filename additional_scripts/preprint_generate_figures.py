@@ -143,6 +143,39 @@ CORRELATION_METHOD_SHORT_LABELS = {
     "slow_homeostat_unconstrained": "slow-homeostatic",
     "normalized_slow_homeostat": "budget-constrained",
 }
+
+CORRELATION_BAD_CASES = {
+    "fixed_low_accuracy": {
+        "condition": "fixed",
+        "label": "fixed\nlow acc.",
+        "run_dir": COMPARE_MATCHED_DIR / "fixed_input2_wAiAe10_thetaPlus0p05_seed4",
+        "description": "lowest-accuracy completed fixed-inhibition replicate at the reference operating point",
+    },
+    "vogels_low_abort": {
+        "condition": "vogels_stable",
+        "label": r"Vogels low $\rho$" + "\nabort",
+        "run_dir": FAILED_VOGELS_LOW_RUN,
+        "description": "Vogels low-rho replicate that aborted during matched-reference training",
+    },
+    "vogels_high_low_accuracy": {
+        "condition": "vogels_unstable",
+        "label": r"Vogels high $\rho$" + "\nlow acc.",
+        "run_dir": REPRESENTATIVE_VOGELS_HIGH_RHO_RUN,
+        "description": "lowest-accuracy completed Vogels high-rho replicate at the reference operating point",
+    },
+    "slow_saturation": {
+        "condition": "slow_homeostat_unconstrained",
+        "label": "slow-homeostatic\nsaturation",
+        "run_dir": FAILED_SLOW_SATURATION_RUN,
+        "description": "slow-homeostatic saturation/failure example from the slow-rule parameter map",
+    },
+    "budget_mismatch": {
+        "condition": "normalized_slow_homeostat",
+        "label": "budget-constrained\nmismatch",
+        "run_dir": FAILED_MISMATCHED_BUDGET_RUN,
+        "description": "budget-constrained mismatched-budget runaway example",
+    },
+}
 # %% CLASSES AND PANEL FUNCTION
 @dataclass(frozen=True)
 class PanelConfig:
@@ -935,6 +968,52 @@ CORRELATION_PANELS: dict[str, PanelConfig] = {
         xrotation=35,
         xtick_linebreaks=False,
     ),
+    "corr_bad_within_between": panel(
+        "figureS_correlations",
+        "panel_h_bad_W_AiAe_within_between_label_correlations.pdf",
+        "bad-case within- vs between-label\n$W^{IE}$ profile similarity",
+        figsize_cm=CORRELATION_WIDE_METRIC_SIZE,
+        ylabel="median pairwise correlation",
+        ylim=(-0.35, 1.05),
+        legend_show=False,
+        legend_loc="upper right",
+        grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
+    ),
+    "corr_bad_block_contrast": panel(
+        "figureS_correlations",
+        "panel_i_bad_W_AiAe_label_block_contrast.pdf",
+        r"bad-case $W^{IE}$ label-block contrast",
+        figsize_cm=CORRELATION_METRIC_SIZE,
+        ylabel="within - between corr.",
+        ylim=(-0.1, 0.7),
+        grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
+    ),
+    "corr_bad_similarity_coupling": panel(
+        "figureS_correlations",
+        "panel_j_bad_W_XeAe_W_AiAe_similarity_coupling.pdf",
+        "bad-case feedforward-inhibitory\nsimilarity coupling",
+        figsize_cm=CORRELATION_METRIC_SIZE,
+        ylabel=r"corr($W^{XE}$ sim., $W^{IE}$ sim.)",
+        ylim=(-0.2, 0.9),
+        grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
+    ),
+    "corr_bad_label_silhouette": panel(
+        "figureS_correlations",
+        "panel_k_bad_W_AiAe_label_silhouette.pdf",
+        r"bad-case $W^{IE}$ label-cluster index",
+        figsize_cm=CORRELATION_METRIC_SIZE,
+        ylabel="silhouette-like score",
+        ylim=(-0.25, 0.55),
+        grid_axis="y",
+        xrotation=35,
+        xtick_linebreaks=False,
+    ),
 }
 
 for _weight_name in ("W_XeAe", "W_AiAe"):
@@ -949,6 +1028,25 @@ for _weight_name in ("W_XeAe", "W_AiAe"):
             ylabel="sorted E neurons",
             cmap=mcolors.LinearSegmentedColormap.from_list(
                 f"weight_corr_{_weight_name}_{_condition}",
+                ["#44546a", "#f7f7f4", METHOD_COLORS[_condition]],
+            ),
+            grid_axis=None,
+            spines=NO_SPINES,
+        )
+
+for _weight_name in ("W_XeAe", "W_AiAe"):
+    _symbol = r"$W^{XE}$" if _weight_name == "W_XeAe" else r"$W^{IE}$"
+    for _case_key, _case in CORRELATION_BAD_CASES.items():
+        _condition = str(_case["condition"])
+        CORRELATION_PANELS[f"corr_bad_{_weight_name}_heatmap_{_case_key}"] = panel(
+            "figureS_correlations",
+            f"bad_heatmap_{_weight_name}_{_case_key}.pdf",
+            f"{_case['label']}\n{_symbol} column correlations",
+            figsize_cm=CORRELATION_HEATMAP_SIZE,
+            xlabel="sorted E neurons",
+            ylabel="sorted E neurons",
+            cmap=mcolors.LinearSegmentedColormap.from_list(
+                f"bad_weight_corr_{_weight_name}_{_case_key}",
                 ["#44546a", "#f7f7f4", METHOD_COLORS[_condition]],
             ),
             grid_axis=None,
@@ -2387,8 +2485,12 @@ def draw_weight_correlation_distribution(weight_name: str, cfg: PanelConfig) -> 
     save_panel(fig, cfg)
     return stats
 
-def draw_weight_correlation_heatmap(condition: str, weight_name: str, cfg: PanelConfig) -> dict[str, float]:
-    run_dir = representative_dir_for_condition(condition)
+def draw_weight_correlation_heatmap_from_run(
+    run_dir: Path,
+    condition: str,
+    weight_name: str,
+    cfg: PanelConfig,
+) -> dict[str, float]:
     weights = np.load(latest_snapshot(run_dir, weight_name))
     corr = column_correlation_matrix(weights, neutralize_diagonal=(weight_name == "W_AiAe"))
     order = sort_order_from_assignments(run_dir, corr.shape[0])
@@ -2417,7 +2519,16 @@ def draw_weight_correlation_heatmap(condition: str, weight_name: str, cfg: Panel
         "q75": float(np.percentile(values, 75)) if values.size else float("nan"),
         "mean": float(np.mean(values)) if values.size else float("nan"),
         "std": float(np.std(values)) if values.size else float("nan"),
+        "run_dir": str(run_dir),
     }
+
+def draw_weight_correlation_heatmap(condition: str, weight_name: str, cfg: PanelConfig) -> dict[str, float]:
+    return draw_weight_correlation_heatmap_from_run(
+        representative_dir_for_condition(condition),
+        condition,
+        weight_name,
+        cfg,
+    )
 
 def run_label_masks(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     valid = labels >= 0
@@ -2520,6 +2631,19 @@ def method_label_structure_metrics() -> dict[str, list[dict[str, object]]]:
         ]
     return metrics
 
+def bad_case_label_structure_metrics() -> dict[str, list[dict[str, object]]]:
+    metrics: dict[str, list[dict[str, object]]] = {}
+    for case_key, case in CORRELATION_BAD_CASES.items():
+        run_dir = Path(case["run_dir"])
+        metrics[case_key] = [run_weight_correlation_metrics(run_dir)] if run_dir.exists() else []
+    return metrics
+
+def bad_case_labels() -> dict[str, str]:
+    return {key: str(case["label"]) for key, case in CORRELATION_BAD_CASES.items()}
+
+def bad_case_colors() -> dict[str, str]:
+    return {key: METHOD_COLORS[str(case["condition"])] for key, case in CORRELATION_BAD_CASES.items()}
+
 def finite_metric_values(metrics: dict[str, list[dict[str, object]]], condition: str, key: str) -> np.ndarray:
     vals = [float(m[key]) for m in metrics.get(condition, []) if np.isfinite(float(m.get(key, float("nan"))))]
     return np.asarray(vals, dtype=float)
@@ -2534,14 +2658,18 @@ def plot_metric_points(
     *,
     cfg: PanelConfig,
     conditions: list[str] | None = None,
+    labels: dict[str, str] | None = None,
+    colors: dict[str, str] | None = None,
 ) -> dict[str, dict[str, float]]:
     plot_conditions = conditions or CORRELATION_METHODS
+    label_lookup = labels or CORRELATION_METHOD_SHORT_LABELS
+    color_lookup = colors or METHOD_COLORS
     stats: dict[str, dict[str, float]] = {}
     for xi, condition in enumerate(plot_conditions):
         vals = finite_metric_values(metrics, condition, key)
         if vals.size == 0:
             continue
-        color = METHOD_COLORS[condition]
+        color = color_lookup[condition]
         jitter = np.linspace(-0.075, 0.075, vals.size) if vals.size > 1 else np.asarray([0.0])
         ax.scatter(np.full(vals.size, xi) + jitter, vals, color=color, s=9, zorder=3)
         ax.errorbar(
@@ -2563,8 +2691,8 @@ def plot_metric_points(
             "q75": float(np.percentile(vals, 75)),
         }
     ax.set_xticks(np.arange(len(plot_conditions)))
-    labels = [CORRELATION_METHOD_SHORT_LABELS[c] for c in plot_conditions]
-    ax.set_xticklabels(panel_xtick_labels(cfg, labels), fontsize=6)
+    xtick_labels = [label_lookup[c] for c in plot_conditions]
+    ax.set_xticklabels(panel_xtick_labels(cfg, xtick_labels), fontsize=6)
     apply_panel_style(ax, cfg)
     return stats
 
@@ -2706,6 +2834,101 @@ def draw_label_structure_metric_panels(metrics: dict[str, list[dict[str, object]
 
     return output
 
+def draw_bad_within_between_panel(metrics: dict[str, list[dict[str, object]]]) -> dict[str, dict[str, float]]:
+    cfg = CORRELATION_PANELS["corr_bad_within_between"]
+    case_keys = list(CORRELATION_BAD_CASES)
+    labels = bad_case_labels()
+    colors = bad_case_colors()
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
+    stats: dict[str, dict[str, float]] = {}
+    for xi, case_key in enumerate(case_keys):
+        color = colors[case_key]
+        within = finite_metric_values(metrics, case_key, "within_median")
+        between = finite_metric_values(metrics, case_key, "between_median")
+        for offset, vals, marker, label in [
+            (-0.11, within, "o", "within label"),
+            (0.11, between, "s", "between labels"),
+        ]:
+            if vals.size == 0:
+                continue
+            ax.scatter(
+                np.full(vals.size, xi + offset),
+                vals,
+                marker=marker,
+                color=color,
+                edgecolor=color,
+                linewidth=0.8,
+                s=14,
+                zorder=3,
+                label=label if xi == 0 else None,
+            )
+        stats[case_key] = {
+            "within_mean": float(np.mean(within)) if within.size else float("nan"),
+            "within_median": float(np.median(within)) if within.size else float("nan"),
+            "between_mean": float(np.mean(between)) if between.size else float("nan"),
+            "between_median": float(np.median(between)) if between.size else float("nan"),
+        }
+    ax.set_xticks(np.arange(len(case_keys)))
+    ax.set_xticklabels(panel_xtick_labels(cfg, [labels[k] for k in case_keys]), fontsize=6)
+    ax.axhline(0, color=GRAY, linestyle="--", linewidth=0.8, zorder=1)
+    apply_panel_style(ax, cfg)
+    fig.tight_layout(pad=0.6)
+    save_panel(fig, cfg)
+    return stats
+
+def draw_bad_label_structure_metric_panels(metrics: dict[str, list[dict[str, object]]]) -> dict[str, object]:
+    output: dict[str, object] = {}
+    case_keys = list(CORRELATION_BAD_CASES)
+    labels = bad_case_labels()
+    colors = bad_case_colors()
+
+    output["within_between"] = draw_bad_within_between_panel(metrics)
+
+    cfg = CORRELATION_PANELS["corr_bad_block_contrast"]
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
+    output["block_contrast"] = plot_metric_points(
+        ax,
+        metrics,
+        "block_contrast",
+        cfg=cfg,
+        conditions=case_keys,
+        labels=labels,
+        colors=colors,
+    )
+    fig.tight_layout(pad=0.6)
+    save_panel(fig, cfg)
+
+    cfg = CORRELATION_PANELS["corr_bad_similarity_coupling"]
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
+    coupling_cases = [case_key for case_key in case_keys if finite_metric_values(metrics, case_key, "xe_ie_similarity_coupling").size]
+    output["xe_ie_similarity_coupling"] = plot_metric_points(
+        ax,
+        metrics,
+        "xe_ie_similarity_coupling",
+        cfg=cfg,
+        conditions=coupling_cases,
+        labels=labels,
+        colors=colors,
+    )
+    fig.tight_layout(pad=0.6)
+    save_panel(fig, cfg)
+
+    cfg = CORRELATION_PANELS["corr_bad_label_silhouette"]
+    fig, ax = plt.subplots(figsize=(cfg.figsize_cm[0] * CM_TO_INCH, cfg.figsize_cm[1] * CM_TO_INCH))
+    output["inhibitory_label_silhouette"] = plot_metric_points(
+        ax,
+        metrics,
+        "inhibitory_label_silhouette",
+        cfg=cfg,
+        conditions=case_keys,
+        labels=labels,
+        colors=colors,
+    )
+    fig.tight_layout(pad=0.6)
+    save_panel(fig, cfg)
+
+    return output
+
 def figure_weight_correlation_diagnostics() -> None:
     """Export candidate panels for pairwise weight-correlation diagnostics."""
     summary: dict[str, object] = {
@@ -2717,7 +2940,9 @@ def figure_weight_correlation_diagnostics() -> None:
         ),
         "distributions": {},
         "representative_heatmaps": {},
+        "bad_representative_heatmaps": {},
         "label_structure": {},
+        "bad_label_structure": {},
     }
 
     summary["distributions"]["W_XeAe"] = draw_weight_correlation_distribution(
@@ -2730,7 +2955,6 @@ def figure_weight_correlation_diagnostics() -> None:
     )
 
     for condition in CORRELATION_METHODS:
-        label = condition.replace("_", "-")
         summary["representative_heatmaps"][condition] = {
             "W_XeAe": draw_weight_correlation_heatmap(
                 condition,
@@ -2744,9 +2968,43 @@ def figure_weight_correlation_diagnostics() -> None:
             ),
         }
 
+    for case_key, case in CORRELATION_BAD_CASES.items():
+        run_dir = Path(case["run_dir"])
+        condition = str(case["condition"])
+        if not run_dir.exists():
+            summary["bad_representative_heatmaps"][case_key] = {
+                "description": case["description"],
+                "run_dir": str(run_dir),
+                "missing": True,
+            }
+            continue
+        summary["bad_representative_heatmaps"][case_key] = {
+            "description": case["description"],
+            "condition": condition,
+            "run_dir": str(run_dir),
+            "W_XeAe": draw_weight_correlation_heatmap_from_run(
+                run_dir,
+                condition,
+                "W_XeAe",
+                CORRELATION_PANELS[f"corr_bad_W_XeAe_heatmap_{case_key}"],
+            ),
+            "W_AiAe": draw_weight_correlation_heatmap_from_run(
+                run_dir,
+                condition,
+                "W_AiAe",
+                CORRELATION_PANELS[f"corr_bad_W_AiAe_heatmap_{case_key}"],
+            ),
+        }
+
     label_metrics = method_label_structure_metrics()
     summary["label_structure"] = {"per_run": label_metrics,
                                   "panels": draw_label_structure_metric_panels(label_metrics)}
+
+    bad_label_metrics = bad_case_label_structure_metrics()
+    summary["bad_label_structure"] = {
+        "per_run": bad_label_metrics,
+        "panels": draw_bad_label_structure_metric_panels(bad_label_metrics),
+    }
 
     CORRELATION_FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     (CORRELATION_FIGURE_DIR / "correlation_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
