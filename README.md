@@ -17,7 +17,7 @@ Repository Layout:
 * `additional_scripts/`: Analysis and preprint figure-generation scripts
 * `hpc/`: Docker/Singularity and SLURM helper scripts
 * `runs/README.md`: Description of the external Zenodo data package
-```
+
 
 ## Setup
 Create a Python environment with the packages used for local runs and plotting:
