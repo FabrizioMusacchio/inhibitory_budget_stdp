@@ -146,12 +146,11 @@ MPLCONFIGDIR=/tmp/mpl conda run -n diehl_cook_euler python additional_scripts/pr
 The figure script writes panels to `papers/preprint/figures/` in your local working copy.
 
 ## Citation
-If you use this code before the preprint DOI is available, please cite the GitHub repository with the commit hash you used:
+If you use this code, please cite the following preprint:
 
+> Musacchio F., and Fuhrmann M., *Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks*. bioRxiv 2026.09.27.754763; doi: https://doi.org/10.64898/2026.09.27.754763
 
-> Musacchio F., and Fuhrmann M., *Inhibitory budget matching constrains homeostatic plasticity in competitive spiking networks*. bioRxiv, forthcoming.
-
-In case you additionally want to cite a specific archived software version of the analysis scripts, please use the following reference:
+and additionally the archived software version of the analysis scripts:
 
 > Musacchio, F., & Fuhrmann, M. (2026). *Inhibitory Budget STDP: code for budget-constrained inhibitory plasticity in competitive STDP networks* [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22976645
 

@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use this software in your research, please cite the archived software version and the associated preprint once available."
+message: "If you use this software in your research, please cite the associated bioRxiv preprint and the archived software version."
 title: "Inhibitory Budget STDP: code for budget-constrained inhibitory plasticity in competitive STDP networks"
 version: 0.0.1
 date-released: 2026-09-26
@@ -40,4 +40,6 @@ preferred-citation:
   year: 2026
   journal: bioRxiv
   publisher: Cold Spring Harbor Laboratory
-  notes: "Preprint DOI forthcoming."
+  doi: 10.64898/2026.09.27.754763
+  url: "https://doi.org/10.64898/2026.09.27.754763"
+  notes: "bioRxiv 2026.09.27.754763."
